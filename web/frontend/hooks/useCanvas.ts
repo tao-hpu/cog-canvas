@@ -6,13 +6,13 @@ interface CanvasState {
   graphData: GraphData | null;
   stats: CanvasStats | null;
   cogcanvasEnabled: boolean;
-  viewMode: 'list' | 'graph';
+  viewMode: 'list' | 'graph' | 'help';
   setObjects: (objects: CanvasObject[]) => void;
   addObjects: (objects: CanvasObject[]) => void;
   setGraphData: (data: GraphData) => void;
   setStats: (stats: CanvasStats) => void;
   toggleCogcanvas: () => void;
-  setViewMode: (mode: 'list' | 'graph') => void;
+  setViewMode: (mode: 'list' | 'graph' | 'help') => void;
   clearAll: () => void;
 }
 

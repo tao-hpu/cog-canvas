@@ -8,6 +8,7 @@ class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     message: str = Field(..., description="User message")
     session_id: Optional[str] = Field(default="default", description="Session identifier")
+    cogcanvas_enabled: Optional[bool] = Field(default=True, description="Enable CogCanvas extraction")
 
 
 class CanvasObjectResponse(BaseModel):

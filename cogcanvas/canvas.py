@@ -679,13 +679,22 @@ class Canvas:
     def stats(self) -> Dict[str, Any]:
         """Get canvas statistics."""
         type_counts = {}
+        total_confidence = 0.0
         for obj in self._objects.values():
             type_counts[obj.type.value] = type_counts.get(obj.type.value, 0) + 1
+            try:
+                conf = float(obj.confidence)
+            except (ValueError, TypeError):
+                conf = 0.0
+            total_confidence += conf
+
+        avg_confidence = total_confidence / len(self._objects) if self._objects else 0.0
 
         return {
             "total_objects": self.size,
             "turn_count": self._turn_counter,
             "by_type": type_counts,
+            "avg_confidence": avg_confidence,
         }
 
     # =========================================================================

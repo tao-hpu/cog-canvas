@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState, useRef } from 'react';
 import { useChat } from '@/hooks/useChat';
 import { useCanvas } from '@/hooks/useCanvas';
 import { MessageList } from '@/components/chat/MessageList';
-import { ChatInput } from '@/components/chat/ChatInput';
+import { ChatInput, getRandomTestMessage } from '@/components/chat/ChatInput';
 import { ObjectList } from '@/components/canvas/ObjectList';
 import { GraphView } from '@/components/canvas/GraphView';
+import { HelpView } from '@/components/canvas/HelpView';
 import { ControlPanel } from '@/components/control/ControlPanel';
 import {
   sendMessage,
@@ -19,10 +20,13 @@ import { CanvasObject } from '@/lib/types';
 
 export default function Home() {
   // Resizable sidebar
-  const [sidebarWidth, setSidebarWidth] = useState(480);
+  const [sidebarWidth, setSidebarWidth] = useState(560);
   const isResizing = useRef(false);
   const startX = useRef(0);
   const startWidth = useRef(0);
+
+  const graphContainerRef = useRef<HTMLDivElement>(null);
+  const [graphHeight, setGraphHeight] = useState(0);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     isResizing.current = true;
@@ -53,6 +57,7 @@ export default function Home() {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
+
   const {
     messages,
     isLoading,
@@ -62,6 +67,9 @@ export default function Home() {
     updateLastMessage,
     setLoading,
   } = useChat();
+
+  // Track extraction phase (between 'done' and 'extraction' events)
+  const [isExtracting, setIsExtracting] = useState(false);
 
   const {
     objects,
@@ -77,10 +85,11 @@ export default function Home() {
     clearAll,
   } = useCanvas();
 
-  // Fetch canvas data periodically
+  // Fetch canvas data and handle graph resizing
   useEffect(() => {
     if (!cogcanvasEnabled) return;
 
+    // --- Canvas Data Fetching ---
     const fetchCanvasData = async () => {
       try {
         const [objectsData, graphDataRes, statsData] = await Promise.all([
@@ -98,10 +107,26 @@ export default function Home() {
     };
 
     fetchCanvasData();
-    const interval = setInterval(fetchCanvasData, 5000); // Refresh every 5s
+    const interval = setInterval(fetchCanvasData, 10000); // Refresh every 10s
 
-    return () => clearInterval(interval);
-  }, [cogcanvasEnabled, sessionId, setObjects, setGraphData, setStats]);
+    // --- ResizeObserver for Graph Height ---
+    let observer: ResizeObserver;
+    if (graphContainerRef.current) {
+      observer = new ResizeObserver((entries) => {
+        if (entries[0]) {
+          setGraphHeight(entries[0].contentRect.height);
+        }
+      });
+      observer.observe(graphContainerRef.current);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (graphContainerRef.current && observer) {
+        observer.unobserve(graphContainerRef.current);
+      }
+    };
+  }, [cogcanvasEnabled, sessionId, setObjects, setGraphData, setStats, viewMode]); // Added viewMode to dependencies
 
   const handleSendMessage = useCallback(
     async (message: string) => {
@@ -115,7 +140,7 @@ export default function Home() {
       setLoading(true);
 
       try {
-        const stream = await sendMessage(message, sessionId);
+        const stream = await sendMessage(message, sessionId, cogcanvasEnabled);
         const reader = stream.getReader();
         const decoder = new TextDecoder();
 
@@ -139,24 +164,43 @@ export default function Home() {
 
           for (const line of lines) {
             if (line.startsWith('data: ')) {
-              const data = line.slice(6);
+              const data = line.slice(6).trim();
 
-              if (data === '[DONE]') {
+              // Skip empty data lines or [DONE] marker
+              if (!data || data === '[DONE]') {
                 continue;
               }
 
               try {
                 const parsed = JSON.parse(data);
 
+                // Log non-token events for debugging
+                if (parsed.type !== 'token') {
+                  console.log('SSE event:', parsed.type, parsed);
+                }
+
                 if (parsed.type === 'token') {
                   appendToLast(parsed.content);
-                } else if (parsed.type === 'done') {
-                  // Response complete, content already accumulated
-                  console.log('Stream complete');
+                } else if (parsed.type === 'retrieval') {
+                  // Handle retrieved context objects
+                  console.log('Retrieval results received:', parsed.count);
+                  const retrievedObjects = parsed.objects as CanvasObject[];
+                  updateLastMessage({ retrievedObjects });
+                } else if (parsed.type === 'extracting') {
+                  // Extraction phase started
+                  console.log('Extraction started...');
+                  setLoading(false);
+                  setIsExtracting(true);
                 } else if (parsed.type === 'extraction') {
                   // Handle extracted canvas objects
+                  console.log('Extraction results received');
                   const extractedObjects = parsed.objects as CanvasObject[];
                   updateLastMessage({ extractedObjects });
+                } else if (parsed.type === 'done') {
+                  // All complete
+                  console.log('All complete');
+                  setLoading(false);
+                  setIsExtracting(false);
                   if (cogcanvasEnabled) {
                     // Refresh canvas data
                     const [objectsData, graphDataRes, statsData] =
@@ -188,6 +232,7 @@ export default function Home() {
         });
       } finally {
         setLoading(false);
+        setIsExtracting(false);
       }
     },
     [
@@ -212,14 +257,19 @@ export default function Home() {
     }
   }, [sessionId, clearAll]);
 
+  const handleDiceClick = useCallback(() => {
+    const testMessage = getRandomTestMessage();
+    handleSendMessage(testMessage);
+  }, [handleSendMessage]);
+
   return (
     <main className="flex h-screen">
       {/* Left: Chat Area */}
       <div className="flex-1 min-w-[400px] flex flex-col">
         <div className="flex-1 overflow-hidden">
-          <MessageList messages={messages} />
+          <MessageList messages={messages} isExtracting={isExtracting} onDiceClick={handleDiceClick} />
         </div>
-        <ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />
+        <ChatInput onSendMessage={handleSendMessage} disabled={isLoading} isExtracting={isExtracting} />
       </div>
 
       {/* Resize Handle */}
@@ -242,11 +292,15 @@ export default function Home() {
           stats={stats}
         />
 
-        <div className="flex-1 overflow-hidden">
-          {viewMode === 'list' ? (
+        <div className="flex-1 overflow-hidden" ref={graphContainerRef}>
+          {viewMode === 'help' ? (
+            <HelpView />
+          ) : viewMode === 'list' ? (
             <ObjectList objects={objects} />
+          ) : (viewMode === 'graph' && graphData && graphHeight > 0) ? (
+            <GraphView data={graphData} width={sidebarWidth} height={graphHeight} />
           ) : (
-            graphData && <GraphView data={graphData} width={sidebarWidth} />
+            null // Render nothing or a loading state if graphHeight is 0 or not graph view
           )}
         </div>
       </div>

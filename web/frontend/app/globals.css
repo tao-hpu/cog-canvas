@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 :root {
   --background: #09090b;
@@ -73,4 +74,155 @@ body {
 [role="tablist"] [data-state="inactive"]:hover {
   background-color: #3f3f46;
   color: #fafafa;
+}
+
+/* Markdown prose styles for chat messages */
+.prose {
+  color: inherit;
+}
+
+.prose h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  color: inherit;
+}
+
+.prose h2 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  color: inherit;
+}
+
+.prose h3 {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  color: inherit;
+}
+
+.prose p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose ul, .prose ol {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+
+.prose li {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+  font-size: 0.875em;
+}
+
+.prose thead {
+  border-bottom: 2px solid #52525b;
+}
+
+.prose th {
+  padding: 0.5em 0.75em;
+  text-align: left;
+  font-weight: 600;
+  color: inherit;
+}
+
+.prose td {
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid #3f3f46;
+}
+
+.prose tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.prose code {
+  background-color: #3f3f46;
+  padding: 0.125em 0.25em;
+  border-radius: 0.25em;
+  font-size: 0.875em;
+  color: #f472b6;
+}
+
+.prose pre {
+  background-color: #18181b;
+  padding: 0.75em 1em;
+  border-radius: 0.5em;
+  overflow-x: auto;
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+}
+
+.prose pre code {
+  background-color: transparent;
+  padding: 0;
+  color: #e4e4e7;
+}
+
+.prose blockquote {
+  border-left: 3px solid #3b82f6;
+  padding-left: 1em;
+  margin-left: 0;
+  font-style: italic;
+  color: #a1a1aa;
+}
+
+.prose a {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.prose a:hover {
+  color: #93c5fd;
+}
+
+.prose strong {
+  font-weight: 600;
+  color: inherit;
+}
+
+.prose hr {
+  border-color: #3f3f46;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+/* Custom scrollbar for chat area */
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* Firefox scrollbar */
+.chat-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
 }

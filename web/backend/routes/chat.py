@@ -2,6 +2,7 @@
 
 import json
 import os
+import asyncio
 from typing import AsyncGenerator, Optional
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
@@ -67,7 +68,7 @@ async def generate_chat_stream(
                 query=user_message,
                 top_k=5,
                 method="semantic",
-                include_related=True
+                include_related=False  # Strict top-k limit to prevent result explosion
             )
 
             if retrieval_result.objects:
@@ -92,6 +93,18 @@ When noting important facts or TODOs, state them clearly."""
             {"role": "user", "content": user_message},
         ]
 
+        # If context was injected, send it to frontend as a separate event
+        if context_prompt and retrieval_result and retrieval_result.objects:
+            retrieved_objs = [
+                CanvasObjectResponse.from_canvas_object(obj).model_dump()
+                for obj in retrieval_result.objects
+            ]
+            yield json.dumps({
+                "type": "retrieval",
+                "objects": retrieved_objs,
+                "count": len(retrieved_objs)
+            }) + "\n"
+
         # Step 3: Stream response from LLM
         full_response = ""
         client = get_openai_client()
@@ -112,15 +125,16 @@ When noting important facts or TODOs, state them clearly."""
                     "type": "token",
                     "content": token
                 }) + "\n"
-
-        # Signal response completion
-        yield json.dumps({
-            "type": "done",
-            "content": full_response
-        }) + "\n"
+                await asyncio.sleep(0.02)  # Small delay for smoother UI streaming
 
         # Step 4: Extract canvas objects from this turn
         if cogcanvas_enabled:
+            # Signal extraction start - yield and flush immediately
+            yield json.dumps({
+                "type": "extracting",
+            }) + "\n"
+            await asyncio.sleep(0)  # Force flush to client
+
             extraction_result = canvas.extract(
                 user=user_message,
                 assistant=full_response
@@ -149,6 +163,12 @@ When noting important facts or TODOs, state them clearly."""
                     "count": len(extracted_objs)
                 }) + "\n"
 
+        # Signal complete (after extraction if enabled)
+        yield json.dumps({
+            "type": "done",
+            "content": full_response
+        }) + "\n"
+
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
@@ -175,7 +195,7 @@ async def chat_stream(request: ChatRequest):
         generate_chat_stream(
             user_message=request.message,
             session_id=request.session_id or "default",
-            cogcanvas_enabled=True
+            cogcanvas_enabled=request.cogcanvas_enabled if request.cogcanvas_enabled is not None else True
         )
     )
 
