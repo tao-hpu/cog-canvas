@@ -17,56 +17,89 @@ interface ChatInputProps {
   isExtracting?: boolean;
 }
 
-// Pre-configured test messages for testing CogCanvas extraction features
-// All messages revolve around the same project "TaskFlow" (a team collaboration platform)
+// Pre-configured test messages from Next.js RFC #77740 (Deployment Adapters API)
+// Source: https://github.com/vercel/next.js/discussions/77740
+// Real multi-stakeholder technical discussion: Vercel, Netlify, Deno Deploy, Cloudflare, etc.
 const TEST_MESSAGES = [
-  // === Group 1: Project kickoff & tech stack ===
-  "TaskFlow project is officially kicking off. Our goal is to build a lightweight team collaboration platform with core features including a task board, real-time collaboration, and a team calendar.",
+  // === Turn 1: Original RFC post ===
+  `RFC: Deployment Adapters API
 
-  "For the tech stack, I've decided to go with Next.js + TypeScript for the frontend, FastAPI for the backend, and PostgreSQL for the database. The main reasons are team familiarity and the solid balance of performance and dev productivity.",
+We're introducing a Deployment Adapters API to enable easier deployment across platforms. Vercel will use the same adapter API as every other partner.
 
-  "Sarah has finished the UI mockups for TaskFlow. She's going with a dark theme overall and suggests using color-coded labels for task priority: red for urgent, yellow for important, blue for normal.",
+Key Pain Points:
+1. Background Work Tracking - Currently requires reverse-engineering request lifecycles
+2. Config Modification - Providers must patch next.config or use undocumented env vars
+3. Manifest Reliance - Undocumented manifests create fragility
+4. Full Server Dependency - Entrypoints require loading entire next-server, causing cold boot issues
 
-  // === Group 2: Development issues ===
-  "Ran into a tricky issue today: TaskFlow's board drag-and-drop has serious performance problems on Safari. Very laggy. My initial guess is that React is re-rendering too frequently.",
+Build Output Changes:
+- Node.js: handler(req, res, ctx) returning Promise<void>
+- Edge: handler(req, ctx) returning Promise<Response>
+- waitUntil callback signals background task completion
 
-  "Regarding yesterday's Safari drag performance issue, I found the root cause: every drag was triggering a full board re-render. The fix is to use React.memo on TaskCard components and useMemo to cache the board data.",
+Target: Alpha in Next.js 16 this summer.`,
 
-  "The Safari issue is fixed now. FPS went from 15 to a stable 60. I also applied similar optimizations to the calendar view, and the overall smoothness improved significantly.",
+  // === Turn 2: Deprecation question ===
+  `Can you clarify what happens to minimalMode? Also, what about Vercel-specific features like x-matched-path and x-now-route-matches? Will these become documented or refactored as generic capabilities?`,
 
-  // === Group 3: Real-time collaboration feature ===
-  "Mike asked whether we should use WebSocket for real-time collaboration. I'm leaning toward WebSocket because: 1) task state needs instant sync, 2) we'll want real-time comments later, 3) Server-Sent Events only supports one-way communication.",
+  // === Turn 3: Routing concern ===
+  `If there are separate entrypoints, does this mean adapters need to implement custom routing logic? The routing rules have historically been very lightly documented, causing lots of reverse-engineering overhead. This is a critical concern for platform providers.`,
 
-  "The WebSocket technical approach is finalized: Socket.io for the client library, FastAPI's native WebSocket support on the backend. Message format will be JSON with event_type, payload, and timestamp fields.",
+  // === Turn 4: Deno Deploy feedback ===
+  `From Deno Deploy's perspective: I'd prefer a singular entrypoint over multiple ones. Also interested in CDN cache integration hooks - currently these are flagged by minimal mode. Deno's serverless architecture would benefit from a unified entry.`,
 
-  "First version of real-time collaboration is done. Now when multiple people edit tasks simultaneously, state syncs within seconds. But I found an edge case: two people editing the same task title causes conflicts. We need to add an optimistic locking mechanism.",
+  // === Turn 5: OpenNext questions ===
+  `Three questions about the RFC:
+1. Will Vercel develop adapters directly?
+2. Will you incorporate OpenNext work?
+3. What about image optimization provider flexibility?`,
 
-  // === Group 4: Testing and deployment ===
-  `TaskFlow progress update:
+  // === Turn 6: PPR platform lock-in concern ===
+  `Partial Prerendering (PPR) is a critical missing feature for non-Vercel platforms. I propose a Progressive Rendering Format standard for CDN-friendly PPR implementation. Currently only Vercel can properly leverage PPR. This creates platform lock-in.`,
 
-Completed features:
-- Task board (create, edit, drag-and-drop, archive)
-- User auth (login, registration, OAuth)
-- Real-time collaboration (WebSocket state sync)
-- Basic permission management (admin, member, guest)
+  // === Turn 7: Comprehensive feedback on gaps ===
+  `Comprehensive feedback on the RFC gaps:
+- Missing middleware matcher documentation
+- Underspecified pathname format (suggests URLPattern standard)
+- Insufficient routing behavior specification
+- Unclear fallbackID handling for dynamic routes
+- Ambiguous IMAGE type pathname mapping
 
-Testing status:
-- Unit test coverage at 78%
-- E2E tests cover all core flows
-- Performance testing: single board supports 500 concurrent users
+Critical Question: Will adapters need to implement full end-to-end routing? This has historically been the biggest barrier for platform providers.`,
 
-Open items:
-- Mobile responsiveness not done yet
-- Need to add data export functionality`,
+  // === Turn 8: Vercel detailed response ===
+  `Vercel's detailed response to the concerns:
+- maxDuration/expiration/revalidate will be documented
+- fallbackID always references STATIC_FILE
+- allowQuery helps generate stable ISR cache keys
+- next-server remains but much slimmer; adapters route at CDN/edge level
+- No backport to 14.x (requires big refactors)
+- Node.js signature kept matching IncomingMessage/ServerResponse for compatibility
+- Considering a community adapter namespace
+- Undocumented private APIs will be removed with documented alternatives and lead time`,
 
-  "TaskFlow staging environment is deployed at staging.taskflow.dev. Please help test it out, focusing on: 1) Is drag-and-drop smooth? 2) Is real-time sync responsive? 3) Does the login flow work correctly? File issues if you find anything.",
+  // === Turn 9: Beta docs announcement ===
+  `Beta documentation is now available at nextjs.org/docs/beta/app/api-reference/config/next-config-js/adapterPath. This marks a significant milestone toward the alpha release in Next.js 16.`,
 
-  // === Group 5: Post-launch feedback and iteration ===
-  "TaskFlow has been live for a week now. User feedback so far: 1) Want keyboard shortcuts, 2) Task search isn't powerful enough, 3) Want to toggle between board view and list view. Logging these for the next sprint.",
+  // === Turn 10: Community feature requests ===
+  `Community requests summary:
+- Need adapter-level HTTP header customization (e.g., managing unsupported stale-while-revalidate)
+- Request customizable image optimization caching locations
+- Advocated for Docker/environment variable friendliness
+- Suggested optional lifecycle hooks (onPreBuild, onPostOutput) for CI/CD integration`,
 
-  "For the keyboard shortcuts feature request, I've drafted a proposal: Ctrl+N to create task, Ctrl+K for quick search, arrow keys to navigate tasks, Enter to open details, Esc to close modals. Took inspiration from Notion and Linear.",
+  // === Turn 11: Status update ===
+  `Current RFC Status Summary (Oct 2025):
+- Beta documentation is live
+- Adapters API in alpha as of Next.js 16
+- Official adapter implementations pending for Netlify, Cloudflare, AWS
+- Release timeline: several months away
+- Community builders exploring early adoption
 
-  "Some users reported that TaskFlow works poorly on slow networks—task operations often fail. I suggest adding an offline queue mechanism: store operations in local IndexedDB first, then auto-sync when connectivity returns. That way it still works offline.",
+Remaining TODOs:
+- Complete routing specification documentation
+- Finalize PPR support for non-Vercel platforms
+- Ship official adapters for major platforms`,
 ];
 
 export function getRandomTestMessage(): string {
