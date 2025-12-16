@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+:root {
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #09090b;
+  --card-foreground: #fafafa;
+  --popover: #09090b;
+  --popover-foreground: #fafafa;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #27272a;
+  --secondary-foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: #27272a;
+  --input: #27272a;
+  --ring: #3b82f6;
+  --radius: 0.5rem;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/* Switch component explicit colors */
+[data-state="checked"][role="switch"] {
+  background-color: #3b82f6 !important;
+}
+
+[data-state="unchecked"][role="switch"] {
+  background-color: #52525b !important;
+}
+
+/* Message bubble colors */
+.bg-primary {
+  background-color: #3b82f6 !important;
+}
+
+.bg-muted {
+  background-color: #27272a !important;
+}
+
+.text-primary-foreground {
+  color: #ffffff !important;
+}
+
+.text-foreground {
+  color: #fafafa !important;
+}
+
+/* Tabs active state */
+[role="tablist"] [data-state="active"] {
+  background-color: #3b82f6 !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+[role="tablist"] [data-state="inactive"] {
+  background-color: transparent;
+  color: #a1a1aa;
+}
+
+[role="tablist"] [data-state="inactive"]:hover {
+  background-color: #3f3f46;
+  color: #fafafa;
+}
