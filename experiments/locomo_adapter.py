@@ -129,6 +129,11 @@ def convert_to_eval_format(locomo_data: List[dict]) -> List[LoCoMoConversation]:
         for session_key in session_keys:
             session_dialogues = conv_data[session_key]
 
+            # Extract session datetime for this session
+            session_num = session_key.split('_')[1]
+            datetime_key = f"session_{session_num}_date_time"
+            session_datetime = conv_data.get(datetime_key, None)
+
             for dialogue in session_dialogues:
                 speaker = dialogue['speaker']
                 text = dialogue['text']
@@ -155,7 +160,8 @@ def convert_to_eval_format(locomo_data: List[dict]) -> List[LoCoMoConversation]:
                         turns.append(ConversationTurn(
                             turn_id=turn_id,
                             user=user_text,
-                            assistant=""
+                            assistant="",
+                            session_datetime=session_datetime
                         ))
                         dialogue_id_to_turn[dia_id] = turn_id
                         turn_id += 1
@@ -174,7 +180,8 @@ def convert_to_eval_format(locomo_data: List[dict]) -> List[LoCoMoConversation]:
                         turns.append(ConversationTurn(
                             turn_id=turn_id,
                             user="",
-                            assistant=assistant_text
+                            assistant=assistant_text,
+                            session_datetime=session_datetime
                         ))
                         dialogue_id_to_turn[dia_id] = turn_id
                         turn_id += 1
@@ -286,6 +293,7 @@ def export_to_json(conversations: List[LoCoMoConversation], output_path: str) ->
                         'turn_id': t.turn_id,
                         'user': t.user,
                         'assistant': t.assistant,
+                        'session_datetime': t.session_datetime,
                     }
                     for t in conv.turns
                 ],

@@ -586,7 +586,7 @@ def main():
     parser.add_argument(
         "--agent", "-a",
         choices=[
-            "cogcanvas", "cogcanvas-nograph",
+            "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-boost",
             "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
             "native", "summarization", "rag", "memgpt-lite", "graphrag-lite"
         ],
@@ -677,6 +677,25 @@ def main():
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "semantic",
                 "prompt_style": "cot"
+            }
+        elif args.agent == "cogcanvas-filter":
+            # Full config with LLM Filtering (experimental - for LoCoMo improvement)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "use_llm_filter": True,
+                "filter_candidate_k": 20,
+            }
+        elif args.agent == "cogcanvas-boost":
+            # High-recall config for LoCoMo improvement (top_k=15)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 15,  # Increased from 5 to 15
             }
 
         agent_factory = lambda: CogCanvasAgent(**config)

@@ -526,7 +526,7 @@ def main():
     parser.add_argument(
         "--agent", "-a",
         choices=[
-            "cogcanvas", "cogcanvas-nograph", 
+            "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-cot-v2",
             "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
             "native", "summarization", "rag", "memgpt-lite", "graphrag-lite"
         ],
@@ -634,7 +634,23 @@ def main():
                 "retrieval_method": "semantic",
                 "prompt_style": "cot"
             }
-            
+        elif args.agent == "cogcanvas-filter":
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "use_llm_filter": True,
+                "filter_candidate_k": 20,
+            }
+        elif args.agent == "cogcanvas-cot-v2":
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot_v2",
+            }
+
         agent_factory = lambda: CogCanvasAgent(**config)
         agent = agent_factory() # Create a dummy for name prop
         

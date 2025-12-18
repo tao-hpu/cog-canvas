@@ -25,6 +25,7 @@ Rules:
 - The citation must be a verbatim substring from either the user or assistant message
 - Be conservative: only extract genuinely important information
 - Skip trivial or obvious statements
+- **Time Extraction**: If the fact mentions a time (explicit like "May 7, 2023" or relative like "yesterday", "last week", "next month"), extract it VERBATIM in the "time_expression" field. Leave empty if no time is mentioned.
 
 Use the extract_canvas_objects tool to return the extracted objects."""
 
@@ -135,6 +136,10 @@ class AnthropicBackend(LLMBackend):
                                         "minimum": 0.0,
                                         "maximum": 1.0,
                                     },
+                                    "time_expression": {
+                                        "type": "string",
+                                        "description": "VERBATIM time expression if mentioned (e.g., 'yesterday', 'May 7, 2023', 'next week'), or empty string if no time",
+                                    },
                                 },
                                 "required": ["type", "content", "citation", "context", "confidence"],
                             },
@@ -181,13 +186,18 @@ class AnthropicBackend(LLMBackend):
                     for item in extracted_objects:
                         try:
                             obj_type = ObjectType(item.get("type", "key_fact"))
+                            # Extract time expression if present
+                            time_expr = item.get("time_expression", "")
+                            event_time_raw = time_expr if time_expr else None
+
                             objects.append(
                                 CanvasObject(
                                     type=obj_type,
                                     content=item.get("content", ""),
-                                    citation=item.get("citation", ""),  # Provenance for verification
+                                    quote=item.get("citation", ""),  # Provenance for verification
                                     context=item.get("context", ""),
                                     confidence=float(item.get("confidence", 0.8)),
+                                    event_time_raw=event_time_raw,  # Store raw time expression
                                 )
                             )
                         except (ValueError, KeyError) as e:

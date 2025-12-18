@@ -1,0 +1,189 @@
+================================================================================
+PHASE 4: TEMPORAL-AWARE ANSWER GENERATION FLOW
+================================================================================
+
+                           ANSWER QUESTION FLOW
+                                    |
+                                    v
+                    +-------------------------------+
+                    |  answer_question(question)    |
+                    +-------------------------------+
+                                    |
+                                    v
+                    +-------------------------------+
+                    |  Retrieve relevant canvas     |
+                    |  objects (Phase 3)            |
+                    +-------------------------------+
+                                    |
+                                    v
+                    +-------------------------------+
+                    |  Build context from retrieved |
+                    |  objects (inject method)      |
+                    +-------------------------------+
+                                    |
+                                    v
+                    +-------------------------------+
+                    | _extract_answer_from_context  |
+                    +-------------------------------+
+                                    |
+                  +-----------------+-----------------+
+                  |                                   |
+                  v                                   v
+    +---------------------------+      +---------------------------+
+    | use_real_llm_for_answer?  |      | Fallback: Heuristic       |
+    +---------------------------+      | (combine object quotes)   |
+                  |                    +---------------------------+
+                  | YES
+                  v
+    +---------------------------+
+    | is_temporal_query(question)|  <-- PHASE 4 ADDITION
+    +---------------------------+
+                  |
+        +---------+---------+
+        |                   |
+        v                   v
+    +--------+        +------------+
+    |TEMPORAL|        |NON-TEMPORAL|
+    +--------+        +------------+
+        |                   |
+        v                   |
+  +-----------+             |
+  | TEMPORAL  |             |
+  | PROMPT    |             |
+  +-----------+             |
+        |                   |
+        |            +------+------+
+        |            |             |
+        |            v             v
+        |      +---------+   +----------+
+        |      | CoT     |   | Direct   |
+        |      | Prompt  |   | Prompt   |
+        |      +---------+   +----------+
+        |            |             |
+        +------------+-------------+
+                     |
+                     v
+        +---------------------------+
+        | LLM.chat.completions.     |
+        | create(prompt)            |
+        +---------------------------+
+                     |
+                     v
+               +-----------+
+               |  ANSWER   |
+               +-----------+
+
+
+================================================================================
+TEMPORAL PROMPT STRUCTURE
+================================================================================
+
+    You are answering a TEMPORAL question about WHEN something happened.
+
+    ## Instructions for Temporal Reasoning
+    1. Look for explicit dates (e.g., "May 7, 2023", "2023-05-08")
+    2. Look for relative time expressions and their session context
+    3. If a memory says "yesterday" and session was "8 May 2023",
+       the answer is "7 May 2023"
+    4. Pay attention to phrases like "last Tuesday", "2 weeks ago"
+    5. If you see both raw and normalized time, use normalized
+    6. Prioritize temporal info in metadata fields
+
+    ## Memory Context (with temporal information)
+    {canvas_context}  <-- Includes normalized dates from Phase 1
+
+    ## Question
+    {question}
+
+    ## Your Answer (provide specific time/date):
+
+
+================================================================================
+KEY DETECTION LOGIC (Phase 4)
+================================================================================
+
+    # In _extract_answer_from_context method:
+
+    # Check if this is a temporal query
+    is_temporal, temporal_keywords = is_temporal_query(question)
+
+    if is_temporal:
+        # Use TEMPORAL PROMPT
+        prompt = TEMPORAL_PROMPT_TEMPLATE.format(
+            canvas_context=canvas_context,
+            question=question
+        )
+    elif self.prompt_style == "cot":
+        # Use COT PROMPT
+        prompt = COT_PROMPT_TEMPLATE...
+    else:
+        # Use DIRECT PROMPT
+        prompt = DIRECT_PROMPT_TEMPLATE...
+
+    # Generate answer with LLM
+    response = self._client.chat.completions.create(...)
+
+
+================================================================================
+TEMPORAL KEYWORD EXAMPLES
+================================================================================
+
+Question Type                    Detected?  Keywords
+---------------------------------------------------------------------------
+"When did X happen?"             YES        ['when']
+"Did she go yesterday?"          YES        ['yesterday', 'day']
+"What happened last Tuesday?"    YES        ['last', 'tuesday', 'day']
+"What is her name?"              NO         []
+"Where does she live?"           NO         []
+"How long ago was that?"         YES        ['ago', 'how long']
+
+
+================================================================================
+INTEGRATION WITH OTHER PHASES
+================================================================================
+
+    Phase 1: Temporal Extraction
+       ↓ Provides normalized dates in canvas objects
+
+    Phase 2: Graph Construction  
+       ↓ Creates temporal edges and orderings
+
+    Phase 3: Retrieval
+       ↓ Returns temporally-relevant objects
+
+    Phase 4: Answer Generation ← YOU ARE HERE
+       ↓ Detects temporal queries
+       ↓ Uses specialized temporal prompt
+       ↓ Emphasizes date extraction
+       ↓ Returns absolute dates
+
+    Result: "May 7, 2023" instead of "yesterday"
+
+
+================================================================================
+TESTING COVERAGE
+================================================================================
+
+    Test 1: Temporal Query Detection
+       ✓ 6 different query types tested
+       ✓ All correctly classified
+
+    Test 2: Agent Integration
+       ✓ Temporal detection in agent context
+       ✓ Prompt selection verified
+
+    Test 3: Implementation Verification
+       ✓ Import statements present
+       ✓ Detection logic present
+       ✓ Temporal prompt present
+       ✓ All 6 structural checks passed
+
+    Test 4: End-to-End
+       ✓ Process turns with temporal info
+       ✓ Canvas stats verified
+       ✓ Multiple temporal queries tested
+
+
+================================================================================
+STATUS: READY FOR EVALUATION ✓
+================================================================================

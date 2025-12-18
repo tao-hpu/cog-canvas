@@ -59,6 +59,7 @@ class ConversationTurn:
     contains_fact: Optional[str] = None  # ID of planted fact, if any
     is_distractor: bool = False          # True if contains contradicting info
     distractor_for_fact: Optional[str] = None  # ID of fact this distracts from
+    session_datetime: Optional[str] = None  # Session occurrence time (for LoCoMo)
 
 
 @dataclass

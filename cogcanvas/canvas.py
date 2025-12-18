@@ -19,7 +19,6 @@ from cogcanvas.embeddings import (
 )
 from cogcanvas.graph import CanvasGraph
 
-
 class Canvas:
     """
     CogCanvas: A compression-resistant cognitive canvas for LLM conversations.
@@ -46,7 +45,7 @@ class Canvas:
         storage_path: Optional[str] = None,
         llm_backend: Optional[LLMBackend] = None,
         embedding_backend: Optional[EmbeddingBackend] = None,
-        enable_temporal_heuristic: bool = True, # New parameter for ablation
+        enable_temporal_heuristic: bool = True,  # New parameter for ablation
     ):
         """
         Initialize a new Canvas.
@@ -65,7 +64,9 @@ class Canvas:
 
         # Load from environment if not specified
         self.extractor_model = extractor_model or os.environ.get("MODEL_WEAK_2", "mock")
-        self.embedding_model = embedding_model or os.environ.get("EMBEDDING_MODEL", "mock")
+        self.embedding_model = embedding_model or os.environ.get(
+            "EMBEDDING_MODEL", "mock"
+        )
         self.storage_path = Path(storage_path) if storage_path else None
         self.enable_temporal_heuristic = enable_temporal_heuristic
 
@@ -95,12 +96,15 @@ class Canvas:
         # Try to initialize OpenAI backend
         try:
             from cogcanvas.llm.openai import OpenAIBackend
+
             return OpenAIBackend(
                 model=self.extractor_model,
                 embedding_model=self.embedding_model,
             )
         except (ImportError, ValueError) as e:
-            print(f"Warning: Could not initialize OpenAI backend ({e}), falling back to mock")
+            print(
+                f"Warning: Could not initialize OpenAI backend ({e}), falling back to mock"
+            )
             return MockLLMBackend()
 
     def _init_embedding_backend(
@@ -113,17 +117,24 @@ class Canvas:
             return embedding_backend
 
         if self.embedding_model == "mock":
-            print("Warning: Explicitly using MockEmbeddingBackend. Results will be random.")
+            print(
+                "Warning: Explicitly using MockEmbeddingBackend. Results will be random."
+            )
             return MockEmbeddingBackend()
 
         # Check if API embedding is configured
-        api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        api_base = os.environ.get("EMBEDDING_API_BASE") or os.environ.get("OPENAI_API_BASE")
+        api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get(
+            "OPENAI_API_KEY"
+        )
+        api_base = os.environ.get("EMBEDDING_API_BASE") or os.environ.get(
+            "OPENAI_API_BASE"
+        )
 
         # Use API backend if API key is configured
         if api_key:
             try:
                 from cogcanvas.embeddings import APIEmbeddingBackend
+
                 return APIEmbeddingBackend(
                     model=self.embedding_model,
                     api_key=api_key,
@@ -188,8 +199,7 @@ class Canvas:
 
         # Infer relationships automatically
         self._infer_relations(
-            objects,
-            enable_temporal_heuristic=self.enable_temporal_heuristic
+            objects, enable_temporal_heuristic=self.enable_temporal_heuristic
         )
 
         # Persist if storage configured
@@ -247,20 +257,20 @@ class Canvas:
             # Hybrid / Semantic (we upgrade 'semantic' to hybrid silently for better performance)
             semantic_list = self._semantic_retrieve(query, candidates)
             keyword_list = self._keyword_retrieve(query, candidates)
-            
+
             # Convert to dict for O(1) lookup. Object hash is its ID usually, but here we use object instance.
             # Assuming CanvasObject is hashable (it is dataclass with frozen=False but eq=True default).
             # To be safe, map by ID.
             semantic_map = {obj.id: score for obj, score in semantic_list}
             keyword_map = {obj.id: score for obj, score in keyword_list}
-            
+
             scored = []
             ALPHA = 0.7
-            
+
             for obj in candidates:
                 s_score = semantic_map.get(obj.id, 0.0)
                 k_score = keyword_map.get(obj.id, 0.0)
-                
+
                 # Fusion Logic
                 if k_score > 0.5:
                     # Strong keyword match (e.g. exact entity mention) -> Trust it
@@ -268,7 +278,7 @@ class Canvas:
                 else:
                     # Weak/No keyword match -> Rely mostly on semantic
                     final_score = (ALPHA * s_score) + ((1 - ALPHA) * k_score)
-                
+
                 if final_score > 0:
                     scored.append((obj, final_score))
 
@@ -288,7 +298,11 @@ class Canvas:
                 for related_id in related_ids:
                     related_obj = self._objects.get(related_id)
                     # Avoid duplicates
-                    if related_obj and related_obj not in top_objects and related_obj not in related_objects:
+                    if (
+                        related_obj
+                        and related_obj not in top_objects
+                        and related_obj not in related_objects
+                    ):
                         related_objects.append(related_obj)
                         # Decay factor for related nodes
                         related_scores.append(score * 0.8)
@@ -303,6 +317,90 @@ class Canvas:
             query=query,
             retrieval_time=time.time() - start_time,
         )
+
+    def retrieve_and_filter(
+        self,
+        query: str,
+        candidate_k: int = 20,
+        final_k: int = 5,
+        obj_type: Optional[ObjectType] = None,
+        method: Literal["semantic", "keyword", "hybrid"] = "hybrid",
+        include_related: bool = False,
+        use_llm_filter: bool = True,
+    ) -> RetrievalResult:
+        """
+        Two-stage retrieval with optional LLM-based filtering.
+
+        Stage 1: Retrieve candidate_k objects using embedding similarity
+        Stage 2: Use LLM to filter down to final_k most relevant objects
+
+        This improves precision by filtering out "related but not relevant" content
+        that can distract the final answer generation.
+
+        Args:
+            query: Search query
+            candidate_k: Number of candidates to retrieve in stage 1
+            final_k: Number of objects to keep after filtering
+            obj_type: Optional filter by object type
+            method: Retrieval method ("semantic", "keyword", "hybrid")
+            include_related: Whether to include 1-hop graph neighbors
+            use_llm_filter: Whether to apply LLM filtering (can be disabled for ablation)
+
+        Returns:
+            RetrievalResult with filtered objects
+        """
+        # Stage 1: Initial retrieval
+        candidates = self.retrieve(
+            query=query,
+            top_k=candidate_k,
+            obj_type=obj_type,
+            method=method,
+            include_related=include_related,
+        )
+
+        # If filtering disabled or not enough candidates, return as-is
+        if not use_llm_filter or len(candidates.objects) <= final_k:
+            # Just truncate to final_k
+            return RetrievalResult(
+                objects=candidates.objects[:final_k],
+                scores=candidates.scores[:final_k] if candidates.scores else [],
+                query=query,
+                retrieval_time=candidates.retrieval_time,
+            )
+
+        # Stage 2: LLM filtering
+        try:
+            from cogcanvas.filtering import RetrievalFilter
+
+            # Initialize filter (lazy loading)
+            if not hasattr(self, "_retrieval_filter"):
+                self._retrieval_filter = RetrievalFilter()
+
+            filtered = self._retrieval_filter.filter(
+                query=query,
+                candidates=candidates,
+                top_k=final_k,
+            )
+
+            # Convert back to RetrievalResult
+            return filtered.to_retrieval_result()
+
+        except ImportError:
+            logger.warning("filtering module not available, returning unfiltered")
+            return RetrievalResult(
+                objects=candidates.objects[:final_k],
+                scores=candidates.scores[:final_k] if candidates.scores else [],
+                query=query,
+                retrieval_time=candidates.retrieval_time,
+            )
+        except Exception as e:
+            logger.warning(f"LLM filtering failed: {e}, returning unfiltered")
+            return RetrievalResult(
+                objects=candidates.objects[:final_k],
+                scores=candidates.scores[:final_k] if candidates.scores else [],
+                query=query,
+                retrieval_time=candidates.retrieval_time,
+            )
 
     def inject(
         self,
@@ -338,9 +436,13 @@ class Canvas:
 
         # Sort by strategy for pruning priority
         if strategy == "confidence":
-            paired = sorted(zip(objects, scores), key=lambda x: x[0].confidence, reverse=True)
+            paired = sorted(
+                zip(objects, scores), key=lambda x: x[0].confidence, reverse=True
+            )
         elif strategy == "recency":
-            paired = sorted(zip(objects, scores), key=lambda x: x[0].turn_id, reverse=True)
+            paired = sorted(
+                zip(objects, scores), key=lambda x: x[0].turn_id, reverse=True
+            )
         else:  # relevance (default) - already sorted by retrieval score
             paired = list(zip(objects, scores))
 
@@ -358,11 +460,13 @@ class Canvas:
             # Compact JSON without embeddings (save tokens!)
             compact_objs = []
             for obj in objects:
-                compact_objs.append({
-                    "type": obj.type.value,
-                    "content": obj.content,
-                    "quote": obj.quote[:100] if obj.quote else "",  # Truncate quote
-                })
+                compact_objs.append(
+                    {
+                        "type": obj.type.value,
+                        "content": obj.content,
+                        "quote": obj.quote[:100] if obj.quote else "",  # Truncate quote
+                    }
+                )
             return json.dumps(compact_objs, separators=(",", ":"))  # No whitespace
 
         if format == "compact":
@@ -380,7 +484,9 @@ class Canvas:
             line = f"- **[{type_label}]** {obj.content}"
             # Add grounding quote if available (reviewers love verifiable sources!)
             if obj.quote:
-                truncated = obj.quote[:150] + "..." if len(obj.quote) > 150 else obj.quote
+                truncated = (
+                    obj.quote[:150] + "..." if len(obj.quote) > 150 else obj.quote
+                )
                 line += f'\n  > "{truncated}"'
             lines.append(line)
 
@@ -415,7 +521,9 @@ class Canvas:
             obj_text = obj.content
             if format == "markdown" and obj.quote:
                 obj_text += obj.quote[:150]
-            obj_tokens = len(obj_text) // CHARS_PER_TOKEN + 10  # +10 for formatting overhead
+            obj_tokens = (
+                len(obj_text) // CHARS_PER_TOKEN + 10
+            )  # +10 for formatting overhead
 
             if current_tokens + obj_tokens <= remaining_budget:
                 selected_objects.append(obj)
@@ -608,10 +716,7 @@ class Canvas:
         return links_after - links_before
 
     def get_related(
-        self,
-        obj_id: str,
-        depth: int = 1,
-        relation: Optional[str] = None
+        self, obj_id: str, depth: int = 1, relation: Optional[str] = None
     ) -> List[CanvasObject]:
         """
         Get all objects related to the given object.
@@ -633,10 +738,7 @@ class Canvas:
         return [self._objects[rid] for rid in related_ids if rid in self._objects]
 
     def get_subgraph(
-        self,
-        obj_id: str,
-        depth: int = 1,
-        relation: Optional[str] = None
+        self, obj_id: str, depth: int = 1, relation: Optional[str] = None
     ) -> List[CanvasObject]:
         """
         Get a subgraph of objects within N hops.
@@ -654,10 +756,7 @@ class Canvas:
         return self.get_related(obj_id, depth, relation)
 
     def find_path(
-        self,
-        from_id: str,
-        to_id: str,
-        relation: Optional[str] = None
+        self, from_id: str, to_id: str, relation: Optional[str] = None
     ) -> List[CanvasObject]:
         """
         Find shortest path between two objects.
@@ -798,8 +897,8 @@ class Canvas:
         self,
         new_objects: List[CanvasObject],
         reference_threshold: float = 0.5,  # Lowered for better cross-lingual matching
-        causal_threshold: float = 0.45,    # More sensitive causal detection
-        enable_temporal_heuristic: bool = True, # Ablation control
+        causal_threshold: float = 0.45,  # More sensitive causal detection
+        enable_temporal_heuristic: bool = True,  # Ablation control
     ) -> None:
         """
         Automatically infer relationships using HYBRID SIMILARITY (Semantic + Keyword).
@@ -826,16 +925,70 @@ class Canvas:
 
         # Helper for keyword extraction
         STOPWORDS = {
-            "the", "a", "an", "that", "this", "to", "in", "on", "for", "of", "with",
-            "is", "was", "are", "were", "be", "have", "had", "do", "does", "did",
-            "and", "or", "but", "so", "if", "then", "else", "when", "where", "why",
-            "how", "what", "which", "who", "whom", "whose", "i", "you", "he", "she",
-            "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his",
-            "its", "our", "their", "mine", "yours", "hers", "ours", "theirs"
+            "the",
+            "a",
+            "an",
+            "that",
+            "this",
+            "to",
+            "in",
+            "on",
+            "for",
+            "of",
+            "with",
+            "is",
+            "was",
+            "are",
+            "were",
+            "be",
+            "have",
+            "had",
+            "do",
+            "does",
+            "did",
+            "and",
+            "or",
+            "but",
+            "so",
+            "if",
+            "then",
+            "else",
+            "when",
+            "where",
+            "why",
+            "how",
+            "what",
+            "which",
+            "who",
+            "whom",
+            "whose",
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "me",
+            "him",
+            "her",
+            "us",
+            "them",
+            "my",
+            "your",
+            "his",
+            "its",
+            "our",
+            "their",
+            "mine",
+            "yours",
+            "hers",
+            "ours",
+            "theirs",
         }
 
         def get_keywords(text: str) -> set:
-            words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+            words = re.findall(r"\b[a-z]{3,}\b", text.lower())
             return {w for w in words if w not in STOPWORDS}
 
         # Get existing objects (excluding new ones)
@@ -846,7 +999,9 @@ class Canvas:
             return  # Nothing to link to
 
         # Filter existing objects that have embeddings
-        existing_with_embeddings = [obj for obj in existing if obj.embedding is not None]
+        existing_with_embeddings = [
+            obj for obj in existing if obj.embedding is not None
+        ]
         if not existing_with_embeddings:
             return
 
@@ -862,7 +1017,9 @@ class Canvas:
                 new_keywords.update(get_keywords(new_obj.quote))
 
             # Compute similarity to all existing objects at once (efficient batch operation)
-            similarities = batch_cosine_similarity(new_obj.embedding, existing_embeddings)
+            similarities = batch_cosine_similarity(
+                new_obj.embedding, existing_embeddings
+            )
 
             # Rule 1: Semantic references (for all object types)
             for existing_obj, sim in zip(existing_with_embeddings, similarities):
@@ -872,7 +1029,7 @@ class Canvas:
                 if new_keywords and existing_keywords:
                     if not new_keywords.isdisjoint(existing_keywords):
                         overlap = True
-                
+
                 # Hybrid matching: Link if semantic similarity is high OR (overlap AND acceptable similarity)
                 # We lower the threshold significantly if there is keyword overlap (0.3 is usually distinct enough)
                 if sim >= reference_threshold or (overlap and sim >= 0.3):
@@ -884,19 +1041,25 @@ class Canvas:
                 # Find recent decisions (within last 5 turns) with high semantic similarity
                 best_decision = None
                 best_sim = 0.0
-                
+
                 # Dynamic threshold: Lower it if we have keyword overlap
                 current_threshold = causal_threshold
 
                 for existing_obj, sim in zip(existing_with_embeddings, similarities):
-                    if (existing_obj.type == ObjectType.DECISION
+                    if (
+                        existing_obj.type == ObjectType.DECISION
                         and existing_obj.turn_id >= new_obj.turn_id - 5
-                        and existing_obj.turn_id < new_obj.turn_id):
-                        
+                        and existing_obj.turn_id < new_obj.turn_id
+                    ):
+
                         # Check overlap specific to this pair
                         existing_keywords = get_keywords(existing_obj.content)
-                        overlap = not new_keywords.isdisjoint(existing_keywords) if (new_keywords and existing_keywords) else False
-                        
+                        overlap = (
+                            not new_keywords.isdisjoint(existing_keywords)
+                            if (new_keywords and existing_keywords)
+                            else False
+                        )
+
                         # Effective threshold for this pair
                         eff_threshold = 0.3 if overlap else causal_threshold
 
@@ -911,14 +1074,20 @@ class Canvas:
             # Rule 3: INSIGHTs caused_by KEY_FACTs or DECISIONs (semantic matching)
             if new_obj.type == ObjectType.INSIGHT:
                 for existing_obj, sim in zip(existing_with_embeddings, similarities):
-                    if (existing_obj.type in (ObjectType.KEY_FACT, ObjectType.DECISION)
+                    if (
+                        existing_obj.type in (ObjectType.KEY_FACT, ObjectType.DECISION)
                         and existing_obj.turn_id >= new_obj.turn_id - 3
-                        and existing_obj.turn_id < new_obj.turn_id):
-                        
+                        and existing_obj.turn_id < new_obj.turn_id
+                    ):
+
                         # Check overlap
                         existing_keywords = get_keywords(existing_obj.content)
-                        overlap = not new_keywords.isdisjoint(existing_keywords) if (new_keywords and existing_keywords) else False
-                        
+                        overlap = (
+                            not new_keywords.isdisjoint(existing_keywords)
+                            if (new_keywords and existing_keywords)
+                            else False
+                        )
+
                         eff_threshold = 0.3 if overlap else causal_threshold
 
                         if sim >= eff_threshold:
@@ -928,19 +1097,23 @@ class Canvas:
             # Rule 4: DECISIONs caused by recent KEY_FACTs/REMINDERS (Temporal Heuristic)
             # This is critical for catching "Budget $500" -> "Choose AWS" links where semantic overlap is low.
             if enable_temporal_heuristic and new_obj.type == ObjectType.DECISION:
-                 recent_constraints = []
-                 for existing_obj in existing: # Use raw existing list, embeddings not needed
-                     if (existing_obj.type in (ObjectType.KEY_FACT, ObjectType.REMINDER)
-                         and existing_obj.turn_id >= new_obj.turn_id - 5
-                         and existing_obj.turn_id < new_obj.turn_id):
-                         recent_constraints.append(existing_obj)
-                 
-                 # Sort by recency (closest to decision first)
-                 recent_constraints.sort(key=lambda x: x.turn_id, reverse=True)
-                 
-                 # Link top 3
-                 for constraint in recent_constraints[:3]:
-                     self.link(new_obj.id, constraint.id, "caused_by")
+                recent_constraints = []
+                for (
+                    existing_obj
+                ) in existing:  # Use raw existing list, embeddings not needed
+                    if (
+                        existing_obj.type in (ObjectType.KEY_FACT, ObjectType.REMINDER)
+                        and existing_obj.turn_id >= new_obj.turn_id - 5
+                        and existing_obj.turn_id < new_obj.turn_id
+                    ):
+                        recent_constraints.append(existing_obj)
+
+                # Sort by recency (closest to decision first)
+                recent_constraints.sort(key=lambda x: x.turn_id, reverse=True)
+
+                # Link top 3
+                for constraint in recent_constraints[:3]:
+                    self.link(new_obj.id, constraint.id, "caused_by")
 
     # =========================================================================
     # Mock Helpers (for testing)
@@ -984,37 +1157,93 @@ class Canvas:
     def _simple_match_score(self, query: str, content: str) -> float:
         """Simple keyword matching score with stopword filtering and punctuation removal."""
         import string
-        
+
         STOPWORDS = {
-            "a", "an", "the", "and", "or", "but", "if", "then", "else", "when",
-            "at", "by", "for", "from", "in", "of", "on", "to", "with",
-            "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did",
-            "i", "you", "he", "she", "it", "we", "they",
-            "my", "your", "his", "her", "its", "our", "their",
-            "what", "which", "who", "whom", "whose", "why", "how", "where",
-            "this", "that", "these", "those",
-            "can", "could", "will", "would", "shall", "should", "may", "might", "must"
+            "a",
+            "an",
+            "the",
+            "and",
+            "or",
+            "but",
+            "if",
+            "then",
+            "else",
+            "when",
+            "at",
+            "by",
+            "for",
+            "from",
+            "in",
+            "of",
+            "on",
+            "to",
+            "with",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "my",
+            "your",
+            "his",
+            "her",
+            "its",
+            "our",
+            "their",
+            "what",
+            "which",
+            "who",
+            "whom",
+            "whose",
+            "why",
+            "how",
+            "where",
+            "this",
+            "that",
+            "these",
+            "those",
+            "can",
+            "could",
+            "will",
+            "would",
+            "shall",
+            "should",
+            "may",
+            "might",
+            "must",
         }
-        
+
         def clean_tokenize(text: str) -> set:
             # Remove punctuation
             text = text.translate(str.maketrans("", "", string.punctuation))
             return {w for w in text.lower().split() if w not in STOPWORDS}
-        
+
         query_words = clean_tokenize(query)
         content_words = clean_tokenize(content)
-        
+
         if not query_words:
             return 0.0
-            
+
         overlap = query_words & content_words
         return len(overlap) / len(query_words)
 
     def _keyword_retrieve(
-        self,
-        query: str,
-        candidates: List[CanvasObject]
+        self, query: str, candidates: List[CanvasObject]
     ) -> List[Tuple[CanvasObject, float]]:
         """
         Retrieve objects using keyword matching.
@@ -1035,9 +1264,7 @@ class Canvas:
         return scored
 
     def _semantic_retrieve(
-        self,
-        query: str,
-        candidates: List[CanvasObject]
+        self, query: str, candidates: List[CanvasObject]
     ) -> List[Tuple[CanvasObject, float]]:
         """
         Retrieve objects using semantic similarity.
@@ -1056,7 +1283,9 @@ class Canvas:
         query_embedding = self._embedding_backend.embed(query)
 
         # Get candidate embeddings (filter out None embeddings)
-        valid_candidates = [(obj, obj.embedding) for obj in candidates if obj.embedding is not None]
+        valid_candidates = [
+            (obj, obj.embedding) for obj in candidates if obj.embedding is not None
+        ]
         if not valid_candidates:
             return [(obj, 0.0) for obj in candidates]
 
@@ -1065,10 +1294,13 @@ class Canvas:
 
         # Calculate similarities
         from cogcanvas.embeddings import batch_cosine_similarity
+
         similarities = batch_cosine_similarity(query_embedding, candidate_embeddings)
 
         # Pair objects with scores
-        scored = [(obj, float(score)) for obj, score in zip(candidate_objs, similarities)]
+        scored = [
+            (obj, float(score)) for obj, score in zip(candidate_objs, similarities)
+        ]
 
         return scored
 

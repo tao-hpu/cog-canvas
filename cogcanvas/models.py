@@ -48,6 +48,11 @@ class CanvasObject:
     timestamp: float = field(default_factory=time.time)
     confidence: float = 1.0     # Extraction confidence [0, 1]
 
+    # Time context (Phase 1: Temporal Grounding)
+    event_time: Optional[str] = None       # Normalized time (ISO format or description)
+    event_time_raw: Optional[str] = None   # Raw time expression (e.g., "yesterday")
+    session_datetime: Optional[str] = None # Session occurrence time (e.g., "1:56 pm on 8 May, 2023")
+
     # Vector representation (for retrieval)
     embedding: Optional[List[float]] = None
 
@@ -73,6 +78,10 @@ class CanvasObject:
             "turn_id": self.turn_id,
             "timestamp": self.timestamp,
             "confidence": self.confidence,
+            # Time context
+            "event_time": self.event_time,
+            "event_time_raw": self.event_time_raw,
+            "session_datetime": self.session_datetime,
             "embedding": self.embedding,
             # Graph relationships (resolved IDs)
             "references": self.references,
@@ -93,6 +102,10 @@ class CanvasObject:
         data.setdefault("quote", "")
         data.setdefault("source", "")
         data.setdefault("references_text", [])
+        # Handle legacy data without time context fields
+        data.setdefault("event_time", None)
+        data.setdefault("event_time_raw", None)
+        data.setdefault("session_datetime", None)
         # Remove legacy citation field if present
         data.pop("citation", None)
         return cls(**data)

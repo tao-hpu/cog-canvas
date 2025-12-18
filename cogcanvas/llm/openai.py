@@ -25,6 +25,7 @@ Rules:
 - The citation must be a verbatim substring from either the user or assistant message
 - Be conservative: only extract genuinely important information
 - Skip trivial or obvious statements
+- **Time Extraction**: If the fact mentions a time (explicit like "May 7, 2023" or relative like "yesterday", "last week", "next month"), extract it VERBATIM in the "time_expression" field. Leave empty if no time is mentioned.
 
 Output JSON array (can be empty if nothing worth extracting):
 [
@@ -33,18 +34,20 @@ Output JSON array (can be empty if nothing worth extracting):
     "content": "The extracted information in a clear, standalone statement",
     "citation": "EXACT verbatim quote from the dialogue that supports this extraction",
     "context": "Brief explanation of why this was extracted",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "time_expression": "VERBATIM time expression if mentioned (e.g., 'yesterday', 'May 7, 2023', 'next week'), or empty string if no time"
   }
 ]
 
 Example:
-User: "Let's use PostgreSQL, it's better for our budget of $50k"
+User: "Let's use PostgreSQL, it's better for our budget of $50k. I'll schedule the migration for next week."
 Assistant: "Good choice!"
 
 Output:
 [
-  {"type": "decision", "content": "Use PostgreSQL as the database", "citation": "Let's use PostgreSQL", "context": "User made database decision", "confidence": 0.95},
-  {"type": "key_fact", "content": "Budget is $50,000", "citation": "budget of $50k", "context": "Budget constraint mentioned", "confidence": 0.9}
+  {"type": "decision", "content": "Use PostgreSQL as the database", "citation": "Let's use PostgreSQL", "context": "User made database decision", "confidence": 0.95, "time_expression": ""},
+  {"type": "key_fact", "content": "Budget is $50,000", "citation": "budget of $50k", "context": "Budget constraint mentioned", "confidence": 0.9, "time_expression": ""},
+  {"type": "todo", "content": "Schedule database migration", "citation": "I'll schedule the migration for next week", "context": "Migration task with timing", "confidence": 0.9, "time_expression": "next week"}
 ]"""
 
 
@@ -151,6 +154,10 @@ class OpenAIBackend(LLMBackend):
             for item in data:
                 try:
                     obj_type = ObjectType(item.get("type", "key_fact"))
+                    # Extract time expression if present
+                    time_expr = item.get("time_expression", "")
+                    event_time_raw = time_expr if time_expr else None
+
                     objects.append(
                         CanvasObject(
                             type=obj_type,
@@ -158,6 +165,7 @@ class OpenAIBackend(LLMBackend):
                             quote=item.get("citation", ""),  # Provenance for verification (maps to CanvasObject.quote)
                             context=item.get("context", ""),
                             confidence=float(item.get("confidence", 0.8)),
+                            event_time_raw=event_time_raw,  # Store raw time expression
                         )
                     )
                 except (ValueError, KeyError) as e:
