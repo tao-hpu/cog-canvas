@@ -565,6 +565,25 @@ def main():
 
     args = parser.parse_args()
 
+    # Auto-detect dataset path if default not found
+    dataset_path = Path(args.dataset)
+    if not dataset_path.exists():
+        # Try finding it in project structure
+        common_paths = [
+            "cog-canvas/experiments/data/multihop_eval.json",
+            "experiments/data/multihop_eval.json",
+            "../cog-canvas/experiments/data/multihop_eval.json"
+        ]
+        for p in common_paths:
+            if Path(p).exists():
+                print(f"Dataset not found at '{args.dataset}', using '{p}' instead.")
+                dataset_path = Path(p)
+                args.dataset = p # Update args for consistency
+                break
+    
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Multi-hop dataset not found at '{args.dataset}' or common locations.")
+
     # Load dataset
     print(f"Loading multi-hop dataset from {args.dataset}...")
 

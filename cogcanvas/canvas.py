@@ -113,6 +113,7 @@ class Canvas:
             return embedding_backend
 
         if self.embedding_model == "mock":
+            print("Warning: Explicitly using MockEmbeddingBackend. Results will be random.")
             return MockEmbeddingBackend()
 
         # Check if API embedding is configured
@@ -129,12 +130,17 @@ class Canvas:
                     api_base=api_base,
                 )
             except Exception as e:
-                print(f"Warning: Could not initialize API embedding backend ({e}), falling back to mock")
-                return MockEmbeddingBackend()
+                # CRITICAL: Do not fallback to mock silently in production/experiments!
+                raise RuntimeError(
+                    f"Failed to initialize API embedding backend for model '{self.embedding_model}': {e}. "
+                    "Aborting to prevent invalid experimental results."
+                )
 
-        # No API key configured, fall back to mock
-        print("Warning: No EMBEDDING_API_KEY set, using mock embeddings")
-        return MockEmbeddingBackend()
+        # No API key configured
+        raise RuntimeError(
+            "No EMBEDDING_API_KEY or OPENAI_API_KEY found in environment. "
+            "Cannot initialize real embeddings. Set MODEL='mock' if you really intend to use random embeddings."
+        )
 
     # =========================================================================
     # Core API
@@ -976,12 +982,33 @@ class Canvas:
         return objects
 
     def _simple_match_score(self, query: str, content: str) -> float:
-        """Simple keyword matching score."""
-        query_words = set(query.split())
-        content_words = set(content.split())
-        overlap = query_words & content_words
+        """Simple keyword matching score with stopword filtering and punctuation removal."""
+        import string
+        
+        STOPWORDS = {
+            "a", "an", "the", "and", "or", "but", "if", "then", "else", "when",
+            "at", "by", "for", "from", "in", "of", "on", "to", "with",
+            "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did",
+            "i", "you", "he", "she", "it", "we", "they",
+            "my", "your", "his", "her", "its", "our", "their",
+            "what", "which", "who", "whom", "whose", "why", "how", "where",
+            "this", "that", "these", "those",
+            "can", "could", "will", "would", "shall", "should", "may", "might", "must"
+        }
+        
+        def clean_tokenize(text: str) -> set:
+            # Remove punctuation
+            text = text.translate(str.maketrans("", "", string.punctuation))
+            return {w for w in text.lower().split() if w not in STOPWORDS}
+        
+        query_words = clean_tokenize(query)
+        content_words = clean_tokenize(content)
+        
         if not query_words:
             return 0.0
+            
+        overlap = query_words & content_words
         return len(overlap) / len(query_words)
 
     def _keyword_retrieve(
