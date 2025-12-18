@@ -66,6 +66,7 @@ export default function Home() {
     appendToLast,
     updateLastMessage,
     setLoading,
+    clearMessages,
   } = useChat();
 
   // Track extraction phase (between 'done' and 'extraction' events)
@@ -257,6 +258,20 @@ export default function Home() {
     }
   }, [sessionId, clearAll]);
 
+  const handleClearChat = useCallback(() => {
+    clearMessages();
+  }, [clearMessages]);
+
+  const handleClearAll = useCallback(async () => {
+    try {
+      await clearCanvasAPI(sessionId);
+      clearAll();
+      clearMessages();
+    } catch (error) {
+      console.error('Error clearing all:', error);
+    }
+  }, [sessionId, clearAll, clearMessages]);
+
   const handleDiceClick = useCallback(() => {
     const testMessage = getRandomTestMessage();
     handleSendMessage(testMessage);
@@ -289,6 +304,8 @@ export default function Home() {
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           onClearCanvas={handleClearCanvas}
+          onClearChat={handleClearChat}
+          onClearAll={handleClearAll}
           stats={stats}
         />
 

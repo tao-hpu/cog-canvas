@@ -20,6 +20,7 @@ Usage:
 import json
 import random
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
@@ -475,6 +476,7 @@ def generate_dataset(
     num_conversations: int = 100,
     difficulty_distribution: Dict[DifficultyLevel, float] = None,
     seed: int = 42,
+    max_workers: int = 10,
 ) -> EvaluationDataset:
     """
     Generate a complete evaluation dataset.
@@ -483,6 +485,7 @@ def generate_dataset(
         num_conversations: Number of conversations to generate
         difficulty_distribution: Distribution of difficulties (default: balanced)
         seed: Random seed for reproducibility
+        max_workers: Number of parallel workers (default 10)
 
     Returns:
         EvaluationDataset with generated conversations
@@ -495,12 +498,11 @@ def generate_dataset(
             DifficultyLevel.ADVERSARIAL: 0.15,
         }
 
-    generator = ConversationGenerator(seed=seed)
-    conversations = []
-    rng = random.Random(seed)
+    conversations = [None] * num_conversations
 
-    for i in range(num_conversations):
-        # Sample difficulty
+    def generate_one(idx: int) -> Tuple[int, SyntheticConversation]:
+        # Independent RNG per worker for deterministic sampling
+        rng = random.Random(seed + idx)
         difficulty = rng.choices(
             list(difficulty_distribution.keys()),
             weights=list(difficulty_distribution.values()),
@@ -508,12 +510,25 @@ def generate_dataset(
 
         include_distractors = difficulty == DifficultyLevel.ADVERSARIAL
 
+        generator = ConversationGenerator(seed=seed + idx)
         conv = generator.generate(
             difficulty=difficulty,
             num_facts=4,
             include_distractors=include_distractors,
         )
-        conversations.append(conv)
+        return idx, conv
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(generate_one, i): i for i in range(num_conversations)
+        }
+
+        completed = 0
+        for future in as_completed(futures):
+            idx, conv = future.result()
+            conversations[idx] = conv
+            completed += 1
+            print(f"Generated conversation {completed}/{num_conversations}: {conv.id}")
 
     return EvaluationDataset(
         conversations=conversations,
@@ -523,6 +538,7 @@ def generate_dataset(
                 k.value: v for k, v in difficulty_distribution.items()
             },
             "seed": seed,
+            "max_workers": max_workers,
             "generator_version": "1.0",
         },
     )
@@ -554,6 +570,12 @@ def main():
         type=int,
         default=42,
         help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--max-workers", "-w",
+        type=int,
+        default=10,
+        help="Number of parallel workers (default: 10)",
     )
     parser.add_argument(
         "--preview",
@@ -596,6 +618,7 @@ def main():
         dataset = generate_dataset(
             num_conversations=args.num_conversations,
             seed=args.seed,
+            max_workers=args.max_workers,
         )
         dataset.save(args.output)
 

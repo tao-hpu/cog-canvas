@@ -250,8 +250,8 @@ export function GraphView({ data, width, height }: GraphViewProps) {
             </button>
           </div>
 
-          <div className="space-y-3.5">
-            <div>
+          <div className="space-y-0">
+            <div className="pb-4">
               <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide block mb-1.5">
                 Content
               </span>
@@ -259,23 +259,29 @@ export function GraphView({ data, width, height }: GraphViewProps) {
             </div>
 
             {selectedNode.quote && (
-              <div>
-                <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide block mb-1.5">
-                  Quote
-                </span>
-                <p className="text-foreground/90 text-sm italic leading-relaxed border-l-2 border-border/50 pl-3">
-                  "{selectedNode.quote}"
-                </p>
-              </div>
+              <>
+                <div className="border-t border-border/30 my-4"></div>
+                <div className="pb-4">
+                  <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide block mb-1.5">
+                    Quote
+                  </span>
+                  <p className="text-foreground/90 text-sm italic leading-relaxed border-l-2 border-border/50 pl-3 bg-accent/20 py-2 pr-2 rounded-r">
+                    "{selectedNode.quote}"
+                  </p>
+                </div>
+              </>
             )}
 
             {selectedNode.context && (
-              <div>
-                <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide block mb-1.5">
-                  Context
-                </span>
-                <p className="text-foreground/80 text-sm leading-relaxed">{selectedNode.context}</p>
-              </div>
+              <>
+                <div className="border-t border-border/30 my-4"></div>
+                <div className="pb-4">
+                  <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide block mb-1.5">
+                    Context
+                  </span>
+                  <p className="text-foreground/80 text-sm leading-relaxed">{selectedNode.context}</p>
+                </div>
+              </>
             )}
 
             <div className="flex items-center justify-between text-xs font-medium text-muted-foreground pt-3 border-t border-border/50">

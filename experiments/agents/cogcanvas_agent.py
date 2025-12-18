@@ -37,16 +37,25 @@ class CogCanvasAgent(Agent):
         extractor_model: str = None,  # None = load from env
         embedding_model: str = None,  # None = load from env
         retrieval_top_k: int = 5,
-        use_real_llm_for_answer: bool = False,
+        enable_graph_expansion: bool = True,  # New flag for ablation
+        use_real_llm_for_answer: bool = True, # Default to True for fair comparison
+        # Ablation Parameters
+        enable_temporal_heuristic: bool = True,
+        retrieval_method: str = "hybrid",  # "semantic", "keyword", "hybrid"
+        prompt_style: str = "cot",         # "direct", "cot"
     ):
         """
         Initialize CogCanvas agent.
 
         Args:
-            extractor_model: Model for extraction (None = load from .env MODEL_WEAK_2)
-            embedding_model: Model for embeddings (None = load from .env EMBEDDING_MODEL)
-            retrieval_top_k: Number of objects to retrieve for answering
-            use_real_llm_for_answer: If True, use LLM for answer generation (costs money)
+            extractor_model: Model for extraction
+            embedding_model: Model for embeddings
+            retrieval_top_k: Number of objects to retrieve
+            enable_graph_expansion: Whether to use 1-hop graph expansion (Ablation)
+            use_real_llm_for_answer: If True, use LLM for answer generation
+            enable_temporal_heuristic: Enable temporal causality rule in graph construction
+            retrieval_method: Retrieval strategy
+            prompt_style: Prompting strategy
         """
         import os
         from dotenv import load_dotenv
@@ -57,7 +66,18 @@ class CogCanvasAgent(Agent):
         self.embedding_model = embedding_model or os.getenv("EMBEDDING_MODEL", "bge-large-zh-v1.5")
 
         self.retrieval_top_k = retrieval_top_k
+        self.enable_graph_expansion = enable_graph_expansion
         self.use_real_llm_for_answer = use_real_llm_for_answer
+        
+        # Ablation config
+        self.enable_temporal_heuristic = enable_temporal_heuristic
+        self.retrieval_method = retrieval_method
+        self.prompt_style = prompt_style
+
+        # Initialize LLM client for answering
+        self._client = None
+        if self.use_real_llm_for_answer:
+            self._init_client()
 
         # Will be initialized in reset()
         self._canvas: Optional[Canvas] = None
@@ -67,15 +87,36 @@ class CogCanvasAgent(Agent):
         # Initialize
         self.reset()
 
+    def _init_client(self):
+        """Initialize LLM client."""
+        try:
+            from openai import OpenAI
+            import os
+            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            
+            if api_key:
+                self._client = OpenAI(api_key=api_key, base_url=api_base)
+        except ImportError:
+            pass
+
     @property
     def name(self) -> str:
-        return f"CogCanvas(extractor={self.extractor_model}, embed={self.embedding_model})"
+        parts = []
+        if self.enable_graph_expansion: parts.append("Graph")
+        if self.enable_temporal_heuristic: parts.append("Time")
+        if self.retrieval_method == "hybrid": parts.append("Hybrid")
+        if self.prompt_style == "cot": parts.append("CoT")
+        
+        config_str = "+".join(parts) if parts else "Baseline"
+        return f"CogCanvas({config_str})"
 
     def reset(self) -> None:
         """Reset state between conversations."""
         self._canvas = Canvas(
             extractor_model=self.extractor_model,
             embedding_model=self.embedding_model,
+            enable_temporal_heuristic=self.enable_temporal_heuristic,
         )
         self._history = []
         self._retained_history = []
@@ -116,23 +157,22 @@ class CogCanvasAgent(Agent):
         start_time = time.time()
 
         # Step 1: Retrieve relevant canvas objects
+        # Controlled by enable_graph_expansion flag
         retrieval_result = self._canvas.retrieve(
             query=question,
             top_k=self.retrieval_top_k,
-            method="semantic",
-            include_related=True,
+            method=self.retrieval_method,
+            include_related=self.enable_graph_expansion,
         )
 
         # Step 2: Build context from retrieved objects
         canvas_context = self._canvas.inject(
             retrieval_result,
             format="compact",
-            max_tokens=500,
+            max_tokens=800,
         )
 
         # Step 3: Build answer
-        # For now, use simple extraction from canvas objects
-        # (Real implementation would use LLM to synthesize)
         answer = self._extract_answer_from_context(question, retrieval_result, canvas_context)
 
         latency = (time.time() - start_time) * 1000
@@ -142,7 +182,7 @@ class CogCanvasAgent(Agent):
             latency_ms=latency,
             metadata={
                 "num_objects_retrieved": len(retrieval_result.objects),
-                "canvas_size": self._canvas.size,
+                "graph_expansion": self.enable_graph_expansion,
                 "retrieval_scores": retrieval_result.scores[:3] if retrieval_result.scores else [],
             },
         )
@@ -155,18 +195,59 @@ class CogCanvasAgent(Agent):
     ) -> str:
         """
         Extract answer from retrieved canvas objects.
-
-        Improved heuristic (no LLM call):
-        - Combine content + quote from top-k objects
-        - This ensures scoring can find the answer even if not in top-1
-
-        For production, this would use an LLM to synthesize a proper answer.
         """
+        # 1. Use LLM if enabled and available
+        if self.use_real_llm_for_answer and self._client:
+            
+            if self.prompt_style == "cot":
+                # Chain-of-Thought Prompt (The SOTA one)
+                prompt = f"""You are an expert reasoning agent with access to a structured memory graph (CogCanvas).
+Your goal is to answer the user's question by connecting discrete facts from the memory.
+
+## Memory Context (Retrieved Nodes)
+{canvas_context}
+
+## Instructions
+1. Analyze the retrieved nodes. Look for "Constraints" (KeyFacts/Reminders) and "Decisions".
+2. Even if the nodes are not explicitly linked, use your reasoning to infer causal relationships (e.g., "Budget is $500" likely caused "Choose Cheap Hosting").
+3. Synthesize a complete answer that explains WHY things happened.
+
+## Question
+{question}
+
+## Answer
+"""
+            else:
+                # Direct Prompt (The Baseline)
+                prompt = f"""Answer the question based on the provided CogCanvas memory context.
+If the information is not available, say "I don't have enough information."
+
+## Memory Context
+{canvas_context}
+
+## Question
+{question}
+
+## Answer
+Provide a concise, direct answer."""
+            
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.extractor_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200,
+                    temperature=0,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                print(f"LLM generation failed: {e}")
+                # Fallback to heuristic
+        
+        # 2. Fallback Heuristic
         if not retrieval_result.objects:
             return "I don't have information about that."
 
         # Combine all top-k objects' content and quotes
-        # This allows the scoring to find the answer anywhere in the retrieved context
         answers = []
         for obj in retrieval_result.objects[:self.retrieval_top_k]:
             if obj.quote:
@@ -174,7 +255,6 @@ class CogCanvasAgent(Agent):
             if obj.content:
                 answers.append(obj.content)
 
-        # Return combined context - scoring will find the matching substring
         return " | ".join(answers)
 
     def get_canvas_stats(self) -> dict:

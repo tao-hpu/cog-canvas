@@ -611,11 +611,11 @@ class HardModeGenerator:
             },
         )
 
-    def generate_dataset(self, max_workers: int = 5) -> List[SyntheticConversation]:
+    def generate_dataset(self, max_workers: int = 10) -> List[SyntheticConversation]:
         """Generate full hard mode dataset with parallel execution.
 
         Args:
-            max_workers: Number of parallel workers (default 5 to be safe with rate limits)
+            max_workers: Number of parallel workers (default 10; tune down if rate limits hit)
         """
         conversations = [None] * self.config.num_conversations
 

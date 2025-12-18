@@ -531,7 +531,7 @@ def main():
     )
     parser.add_argument(
         "--agent", "-a",
-        choices=["cogcanvas", "native", "summarization", "rag"],
+        choices=["cogcanvas", "cogcanvas-nograph", "native", "summarization", "rag", "memgpt-lite", "graphrag-lite"],
         default="cogcanvas",
         help="Agent to evaluate",
     )
@@ -561,8 +561,8 @@ def main():
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=1,
-        help="Number of parallel workers for running conversations (default: 1 = sequential)",
+        default=10,
+        help="Number of parallel workers for running conversations (default: 10)",
     )
 
     args = parser.parse_args()
@@ -577,8 +577,16 @@ def main():
 
     if args.agent == "cogcanvas":
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
-        agent = CogCanvasAgent()
-        agent_factory = lambda: CogCanvasAgent()
+        agent = CogCanvasAgent(enable_graph_expansion=True)
+        agent_factory = lambda: CogCanvasAgent(enable_graph_expansion=True)
+    elif args.agent == "cogcanvas-nograph":
+        from experiments.agents.cogcanvas_agent import CogCanvasAgent
+        agent = CogCanvasAgent(enable_graph_expansion=False)
+        agent_factory = lambda: CogCanvasAgent(enable_graph_expansion=False)
+    elif args.agent == "rag":
+        from experiments.agents.rag_agent import RagAgent
+        agent = RagAgent(retain_recent=args.retain_recent)
+        agent_factory = lambda: RagAgent(retain_recent=args.retain_recent)
     elif args.agent == "native":
         from experiments.agents.native_agent import NativeAgent
         agent = NativeAgent(retain_recent=args.retain_recent)
@@ -587,6 +595,14 @@ def main():
         from experiments.agents.summarization_agent import SummarizationAgent
         agent = SummarizationAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: SummarizationAgent(retain_recent=args.retain_recent)
+    elif args.agent == "memgpt-lite":
+        from experiments.agents.memgpt_lite_agent import MemGPTLiteAgent
+        agent = MemGPTLiteAgent(core_memory_size=args.retain_recent)
+        agent_factory = lambda: MemGPTLiteAgent(core_memory_size=args.retain_recent)
+    elif args.agent == "graphrag-lite":
+        from experiments.agents.graphrag_lite_agent import GraphRAGLiteAgent
+        agent = GraphRAGLiteAgent(retain_recent=args.retain_recent)
+        agent_factory = lambda: GraphRAGLiteAgent(retain_recent=args.retain_recent)
     else:
         raise NotImplementedError(f"Agent '{args.agent}' not implemented yet")
 

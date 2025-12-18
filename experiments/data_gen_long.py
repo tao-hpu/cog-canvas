@@ -874,7 +874,7 @@ class LongConversationGenerator(ConversationGenerator):
 def generate_long_dataset(
     num_conversations: int = 10,
     seed: int = 42,
-    max_workers: int = 5,
+    max_workers: int = 10,
 ) -> EvaluationDataset:
     """
     Generate long conversation dataset (200 turns, >50k tokens each).
@@ -882,7 +882,7 @@ def generate_long_dataset(
     Args:
         num_conversations: Number of conversations (default 10, since they're massive)
         seed: Random seed for reproducibility
-        max_workers: Number of parallel workers (default 5 to be safe with rate limits)
+        max_workers: Number of parallel workers (default 10; tune down if rate limits hit)
 
     Returns:
         EvaluationDataset with stress-test conversations
@@ -966,6 +966,12 @@ def main():
         default=10,
         help="Number of conversations to generate",
     )
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default=str(Path(__file__).parent / "data" / "eval_set_long.json"),
+        help="Output path for generated dataset (default: experiments/data/eval_set_long.json)",
+    )
 
     args = parser.parse_args()
 
@@ -1033,7 +1039,7 @@ def main():
             seed=42
         )
 
-        output_path = Path(__file__).parent / "data" / "eval_set_long.json"
+        output_path = Path(args.output)
         dataset.save(str(output_path))
 
         # Print summary

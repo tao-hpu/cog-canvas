@@ -77,9 +77,6 @@ venv.bak/
 *~
 .DS_Store
 
-# NANO SPEC tasks (if using)
-tasks/
-
 # Experiment outputs
 logs/
 results/
@@ -98,9 +95,6 @@ results/
 data/
 *.csv
 *.parquet
-
-# Paper drafts - keep in separate repo
-paper/
 
 # Secrets
 .env

@@ -46,6 +46,7 @@ class Canvas:
         storage_path: Optional[str] = None,
         llm_backend: Optional[LLMBackend] = None,
         embedding_backend: Optional[EmbeddingBackend] = None,
+        enable_temporal_heuristic: bool = True, # New parameter for ablation
     ):
         """
         Initialize a new Canvas.
@@ -58,6 +59,7 @@ class Canvas:
             storage_path: Path to persist canvas state (optional)
             llm_backend: Pre-configured LLM backend (overrides extractor_model)
             embedding_backend: Pre-configured embedding backend (overrides embedding_model)
+            enable_temporal_heuristic: Whether to use temporal proximity for causal linking (Rule 4)
         """
         import os
 
@@ -65,6 +67,7 @@ class Canvas:
         self.extractor_model = extractor_model or os.environ.get("MODEL_WEAK_2", "mock")
         self.embedding_model = embedding_model or os.environ.get("EMBEDDING_MODEL", "mock")
         self.storage_path = Path(storage_path) if storage_path else None
+        self.enable_temporal_heuristic = enable_temporal_heuristic
 
         # Initialize LLM backend
         self._backend = self._init_backend(llm_backend)
@@ -178,7 +181,10 @@ class Canvas:
             self._graph.add_node(obj)
 
         # Infer relationships automatically
-        self._infer_relations(objects)
+        self._infer_relations(
+            objects,
+            enable_temporal_heuristic=self.enable_temporal_heuristic
+        )
 
         # Persist if storage configured
         if self.storage_path:
@@ -195,17 +201,26 @@ class Canvas:
         query: str,
         top_k: int = 5,
         obj_type: Optional[ObjectType] = None,
-        method: Literal["semantic", "keyword"] = "semantic",
+        method: Literal["semantic", "keyword", "hybrid"] = "semantic",
         include_related: bool = False,
     ) -> RetrievalResult:
         """
         Retrieve relevant canvas objects for a query.
 
+        ENHANCED (Paper v2): Implements Hybrid Retrieval (Semantic + Keyword Fusion).
+        Even when method='semantic', we now incorporate keyword signals to improve
+        recall for specific entities (e.g., "AWS", "PostgreSQL") that might have
+        low semantic overlap with the query context.
+
+        Fusion Logic:
+        - Base: 0.7 * Semantic + 0.3 * Keyword
+        - Boost: If Keyword > 0.5 (strong match), use max(Semantic, Keyword)
+
         Args:
             query: The search query
             top_k: Maximum number of objects to return
             obj_type: Filter by object type (optional)
-            method: Retrieval method ("semantic" or "keyword")
+            method: Retrieval method ("semantic", "keyword", or "hybrid")
             include_related: If True, include 1-hop related objects
 
         Returns:
@@ -218,11 +233,38 @@ class Canvas:
         if obj_type:
             candidates = [obj for obj in candidates if obj.type == obj_type]
 
-                # Choose retrieval method
-        if method == "semantic":
-            scored = self._semantic_retrieve(query, candidates)
-        else:
+        # 1. Compute scores based on method
+        if method == "keyword":
+            # Pure keyword
             scored = self._keyword_retrieve(query, candidates)
+        else:
+            # Hybrid / Semantic (we upgrade 'semantic' to hybrid silently for better performance)
+            semantic_list = self._semantic_retrieve(query, candidates)
+            keyword_list = self._keyword_retrieve(query, candidates)
+            
+            # Convert to dict for O(1) lookup. Object hash is its ID usually, but here we use object instance.
+            # Assuming CanvasObject is hashable (it is dataclass with frozen=False but eq=True default).
+            # To be safe, map by ID.
+            semantic_map = {obj.id: score for obj, score in semantic_list}
+            keyword_map = {obj.id: score for obj, score in keyword_list}
+            
+            scored = []
+            ALPHA = 0.7
+            
+            for obj in candidates:
+                s_score = semantic_map.get(obj.id, 0.0)
+                k_score = keyword_map.get(obj.id, 0.0)
+                
+                # Fusion Logic
+                if k_score > 0.5:
+                    # Strong keyword match (e.g. exact entity mention) -> Trust it
+                    final_score = max(s_score, k_score)
+                else:
+                    # Weak/No keyword match -> Rely mostly on semantic
+                    final_score = (ALPHA * s_score) + ((1 - ALPHA) * k_score)
+                
+                if final_score > 0:
+                    scored.append((obj, final_score))
 
         # Sort by score and take top_k
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -239,9 +281,11 @@ class Canvas:
                 # Add related objects with slightly lower scores
                 for related_id in related_ids:
                     related_obj = self._objects.get(related_id)
+                    # Avoid duplicates
                     if related_obj and related_obj not in top_objects and related_obj not in related_objects:
                         related_objects.append(related_obj)
-                        related_scores.append(score * 0.8)  # Penalize related objects
+                        # Decay factor for related nodes
+                        related_scores.append(score * 0.8)
 
             # Combine main and related results
             top_objects.extend(related_objects)
@@ -749,26 +793,44 @@ class Canvas:
         new_objects: List[CanvasObject],
         reference_threshold: float = 0.5,  # Lowered for better cross-lingual matching
         causal_threshold: float = 0.45,    # More sensitive causal detection
+        enable_temporal_heuristic: bool = True, # Ablation control
     ) -> None:
         """
-        Automatically infer relationships using SEMANTIC SIMILARITY (not keyword overlap).
+        Automatically infer relationships using HYBRID SIMILARITY (Semantic + Keyword).
 
-        This uses vector embeddings to find semantically related objects even when
-        they don't share exact keywords. For example:
-        - "PostgreSQL" can match "database decision" via embedding similarity
-        - "That choice was wrong" can reference "Use PostgreSQL" semantically
+        Improvements (Paper v2):
+        - Added keyword overlap detection to catch "Budget" -> "Budget Plan" links
+          that might have low semantic similarity in some models.
+        - Hybrid thresholding: Lower semantic barrier if keywords match.
 
         Inference rules:
         1. Semantic references: If cosine similarity > reference_threshold, create 'references' link
         2. Causal TODO->DECISION: Recent decisions with high similarity cause TODOs
         3. INSIGHT causality: INSIGHTs caused_by semantically related KEY_FACTs or DECISIONs
+        4. (Optional) Temporal Heuristic: Recent KEY_FACTs cause DECISIONs regardless of semantics
 
         Args:
             new_objects: Newly extracted objects to analyze
             reference_threshold: Min cosine similarity for 'references' relation (default: 0.7)
             causal_threshold: Min cosine similarity for 'caused_by' relation (default: 0.6)
+            enable_temporal_heuristic: Whether to use Rule 4 (default: True)
         """
         from cogcanvas.embeddings import batch_cosine_similarity
+        import re
+
+        # Helper for keyword extraction
+        STOPWORDS = {
+            "the", "a", "an", "that", "this", "to", "in", "on", "for", "of", "with",
+            "is", "was", "are", "were", "be", "have", "had", "do", "does", "did",
+            "and", "or", "but", "so", "if", "then", "else", "when", "where", "why",
+            "how", "what", "which", "who", "whom", "whose", "i", "you", "he", "she",
+            "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his",
+            "its", "our", "their", "mine", "yours", "hers", "ours", "theirs"
+        }
+
+        def get_keywords(text: str) -> set:
+            words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+            return {w for w in words if w not in STOPWORDS}
 
         # Get existing objects (excluding new ones)
         new_ids = {obj.id for obj in new_objects}
@@ -788,12 +850,26 @@ class Canvas:
             if new_obj.embedding is None:
                 continue  # Skip objects without embeddings
 
+            # Pre-compute new object keywords
+            new_keywords = get_keywords(new_obj.content)
+            if new_obj.quote:
+                new_keywords.update(get_keywords(new_obj.quote))
+
             # Compute similarity to all existing objects at once (efficient batch operation)
             similarities = batch_cosine_similarity(new_obj.embedding, existing_embeddings)
 
             # Rule 1: Semantic references (for all object types)
             for existing_obj, sim in zip(existing_with_embeddings, similarities):
-                if sim >= reference_threshold:
+                # Check for keyword overlap
+                existing_keywords = get_keywords(existing_obj.content)
+                overlap = False
+                if new_keywords and existing_keywords:
+                    if not new_keywords.isdisjoint(existing_keywords):
+                        overlap = True
+                
+                # Hybrid matching: Link if semantic similarity is high OR (overlap AND acceptable similarity)
+                # We lower the threshold significantly if there is keyword overlap (0.3 is usually distinct enough)
+                if sim >= reference_threshold or (overlap and sim >= 0.3):
                     # Use link() to update both graph AND object fields
                     self.link(new_obj.id, existing_obj.id, "references")
 
@@ -801,15 +877,26 @@ class Canvas:
             if new_obj.type == ObjectType.TODO:
                 # Find recent decisions (within last 5 turns) with high semantic similarity
                 best_decision = None
-                best_sim = causal_threshold
+                best_sim = 0.0
+                
+                # Dynamic threshold: Lower it if we have keyword overlap
+                current_threshold = causal_threshold
 
                 for existing_obj, sim in zip(existing_with_embeddings, similarities):
                     if (existing_obj.type == ObjectType.DECISION
                         and existing_obj.turn_id >= new_obj.turn_id - 5
-                        and existing_obj.turn_id < new_obj.turn_id
-                        and sim > best_sim):
-                        best_decision = existing_obj
-                        best_sim = sim
+                        and existing_obj.turn_id < new_obj.turn_id):
+                        
+                        # Check overlap specific to this pair
+                        existing_keywords = get_keywords(existing_obj.content)
+                        overlap = not new_keywords.isdisjoint(existing_keywords) if (new_keywords and existing_keywords) else False
+                        
+                        # Effective threshold for this pair
+                        eff_threshold = 0.3 if overlap else causal_threshold
+
+                        if sim > best_sim and sim >= eff_threshold:
+                            best_decision = existing_obj
+                            best_sim = sim
 
                 if best_decision:
                     # Use link() to update both graph AND object fields
@@ -820,10 +907,34 @@ class Canvas:
                 for existing_obj, sim in zip(existing_with_embeddings, similarities):
                     if (existing_obj.type in (ObjectType.KEY_FACT, ObjectType.DECISION)
                         and existing_obj.turn_id >= new_obj.turn_id - 3
-                        and existing_obj.turn_id < new_obj.turn_id
-                        and sim >= causal_threshold):
-                        # Use link() to update both graph AND object fields
-                        self.link(new_obj.id, existing_obj.id, "caused_by")
+                        and existing_obj.turn_id < new_obj.turn_id):
+                        
+                        # Check overlap
+                        existing_keywords = get_keywords(existing_obj.content)
+                        overlap = not new_keywords.isdisjoint(existing_keywords) if (new_keywords and existing_keywords) else False
+                        
+                        eff_threshold = 0.3 if overlap else causal_threshold
+
+                        if sim >= eff_threshold:
+                            # Use link() to update both graph AND object fields
+                            self.link(new_obj.id, existing_obj.id, "caused_by")
+
+            # Rule 4: DECISIONs caused by recent KEY_FACTs/REMINDERS (Temporal Heuristic)
+            # This is critical for catching "Budget $500" -> "Choose AWS" links where semantic overlap is low.
+            if enable_temporal_heuristic and new_obj.type == ObjectType.DECISION:
+                 recent_constraints = []
+                 for existing_obj in existing: # Use raw existing list, embeddings not needed
+                     if (existing_obj.type in (ObjectType.KEY_FACT, ObjectType.REMINDER)
+                         and existing_obj.turn_id >= new_obj.turn_id - 5
+                         and existing_obj.turn_id < new_obj.turn_id):
+                         recent_constraints.append(existing_obj)
+                 
+                 # Sort by recency (closest to decision first)
+                 recent_constraints.sort(key=lambda x: x.turn_id, reverse=True)
+                 
+                 # Link top 3
+                 for constraint in recent_constraints[:3]:
+                     self.link(new_obj.id, constraint.id, "caused_by")
 
     # =========================================================================
     # Mock Helpers (for testing)

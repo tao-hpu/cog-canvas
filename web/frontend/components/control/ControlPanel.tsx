@@ -3,9 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import { Trash2, HelpCircle } from 'lucide-react';
+import { Trash2, MessageSquareX, RotateCcw, HelpCircle } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -20,6 +18,8 @@ interface ControlPanelProps {
   viewMode: 'list' | 'graph' | 'help';
   onViewModeChange: (mode: 'list' | 'graph' | 'help') => void;
   onClearCanvas: () => void;
+  onClearChat: () => void;
+  onClearAll: () => void;
   stats: CanvasStats | null;
 }
 
@@ -29,28 +29,67 @@ export function ControlPanel({
   viewMode,
   onViewModeChange,
   onClearCanvas,
+  onClearChat,
+  onClearAll,
   stats,
 }: ControlPanelProps) {
   return (
     <div className="p-4 space-y-4 border-b">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">CogCanvas Knowledge Graph</h2>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onClearCanvas}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Clear all memory (Reset Session)</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <h2 className="text-lg font-semibold">CogCanvas</h2>
+        <div className="flex items-center gap-1">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onClearChat}
+                >
+                  <MessageSquareX className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Clear chat history</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onClearCanvas}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Clear canvas memory</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onClearAll}
+                  className="text-destructive hover:text-destructive"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Reset all (chat + canvas)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </div>
 
       <div className="flex items-center justify-between">
@@ -66,7 +105,7 @@ export function ControlPanel({
               <TooltipContent className="max-w-[240px] text-xs">
                 <p><span className="font-semibold text-primary">ON:</span> Extracts artifacts & retrieves context.</p>
                 <p className="mt-1"><span className="font-semibold text-muted-foreground">OFF:</span> Standard chat without memory.</p>
-                {stats && ( // Ensure stats is not null before rendering
+                {stats && (
                   <p className="mt-2 text-muted-foreground">
                     <span className="font-semibold">Total Objects:</span> {stats.total_objects}<br/>
                     <span className="font-semibold">Avg Confidence:</span> {((stats.avg_confidence ?? 0) * 100).toFixed(0)}%
