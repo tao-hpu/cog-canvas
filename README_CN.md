@@ -44,6 +44,27 @@ pip install -e .
 
 ### 2. 环境配置
 
+**实验环境（需要 Python 3.10+）：**
+
+部分实验基线（如 GraphRAG）需要 Python 3.10+。推荐使用 conda：
+
+```bash
+# 创建并激活 py310 环境
+conda create -n py310 python=3.10 -y
+conda activate py310
+
+# 通过 conda 安装 llvmlite/numba（避免 cmake 问题）
+conda install -y llvmlite numba
+
+# 安装项目
+pip install -e .
+
+# 安装 GraphRAG 用于基线对比
+pip install graphrag
+```
+
+**基本配置：**
+
 复制示例环境文件并填入你的 API 密钥：
 
 ```bash

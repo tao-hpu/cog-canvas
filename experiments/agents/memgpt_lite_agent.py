@@ -200,32 +200,28 @@ class MemGPTLiteAgent(Agent):
     def _extract_keywords(self, text: str) -> List[str]:
         """
         Extract keywords from text (simplified version).
-
-        In full MemGPT, this would use more sophisticated NLP.
-        Here we use simple heuristics: extract notable words/phrases.
+        Enhanced to include more patterns for common entities.
         """
         import re
 
-        # Convert to lowercase for matching
         text_lower = text.lower()
-
-        # Look for patterns that might be important:
         keywords = set()
 
+        # Existing patterns
         # 1. Numbers with units (dates, amounts, sizes)
         number_patterns = re.findall(r'\b\d+(?:\.\d+)?\s*(?:gb|tb|mb|kb|%|requests?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|dollars?|\$|people|engineers?|developers?)\b', text_lower)
         keywords.update(number_patterns)
 
-        # 2. Specific dates
+        # 2. Specific dates (month name + day)
         date_patterns = re.findall(r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?\b', text_lower)
         keywords.update(date_patterns)
 
         # 3. Technology names (common patterns)
         tech_words = ['aws', 'azure', 'gcp', 'google cloud', 'digitalocean',
                       'postgresql', 'mysql', 'mongodb', 'sqlite', 'redis', 'memcached',
-                      'fastapi', 'flask', 'django', 'express',
-                      'oauth', 'jwt', 'api key',
-                      'docker', 'kubernetes', 'terraform']
+                      'fastapi', 'flask', 'django', 'express', 'node.js', 'react', 'angular',
+                      'oauth', 'jwt', 'api key', 'api', 'sdk', 'cli',
+                      'docker', 'kubernetes', 'terraform', 'ansible', 'jenkins', 'gitlab ci', 'github actions']
         for tech in tech_words:
             if tech in text_lower:
                 keywords.add(tech)
@@ -236,7 +232,29 @@ class MemGPTLiteAgent(Agent):
 
         # 5. Quoted strings (often important)
         quoted = re.findall(r'"([^"]+)"', text)
-        keywords.update([q.lower() for q in quoted if len(q) < 50])
+        keywords.update([q.lower() for q in quoted if len(q) < 50]) # Limit length to avoid noise
+
+        # New patterns
+        # 6. Email addresses
+        email_patterns = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text_lower)
+        keywords.update(email_patterns)
+
+        # 7. URLs (basic detection)
+        url_patterns = re.findall(r'https?://\S+|www\.\S+', text_lower)
+        keywords.update(url_patterns)
+
+        # 8. Phone numbers (simple format)
+        phone_patterns = re.findall(r'\b(?:\d{3}[-.\s]?)?\d{3}[-.\s]?\d{4}\b', text_lower)
+        keywords.update(phone_patterns)
+
+        # 9. Proper nouns / capitalized words (more robust than just start of sentence)
+        # Look for sequences of capitalized words, or capitalized words not at sentence start
+        # This is a heuristic and might pick up some false positives.
+        capitalized_words = re.findall(r'\b[A-Z][a-z0-9]+\b|\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+\b', text)
+        for word_or_phrase in capitalized_words:
+            # Avoid adding single common words that are capitalized by sentence start
+            if word_or_phrase.lower() not in ['the', 'a', 'an', 'and', 'or', 'but', 'for', 'nor', 'so', 'yet', 'it', 'is', 'in', 'on', 'at']:
+                keywords.add(word_or_phrase.lower())
 
         return list(keywords)
 
@@ -254,30 +272,46 @@ class MemGPTLiteAgent(Agent):
             archival_embeddings = [e.embedding for e in self._archival_memory]
             similarities = batch_cosine_similarity(query_embedding, archival_embeddings)
 
-            # Get top-k by semantic similarity
-            scored = sorted(
-                enumerate(similarities),
-                key=lambda x: x[1],
-                reverse=True
-            )
-            semantic_results = [(idx, score) for idx, score in scored[:self.archival_top_k]]
-
-            # Keyword search (if enabled)
             if self.use_keyword_search:
                 question_keywords = self._extract_keywords(question)
                 keyword_matches = set()
                 for kw in question_keywords:
                     if kw in self._keyword_index:
                         keyword_matches.update(self._keyword_index[kw])
-                keyword_results = list(keyword_matches)
+                
+                # Convert set to list for ordered indexing and limit to top-k
+                keyword_matches_list = list(keyword_matches) 
+                
+                # For RRF, we'll assign a dummy high score and rank based on order
+                keyword_results_rrf = []
+                for i, idx in enumerate(keyword_matches_list[:self.archival_top_k]):
+                    keyword_results_rrf.append((idx, 1.0, i + 1)) # (idx, dummy_score, rank)
 
-        # 2. Combine results (union of semantic and keyword)
-        retrieved_indices = set([idx for idx, _ in semantic_results])
-        retrieved_indices.update(keyword_results[:self.archival_top_k])  # Limit keyword results
+        # 2. Combine results using Reciprocal Rank Fusion (RRF)
+        fused_scores: Dict[int, float] = {}
+        RRF_K = 60 # Typically between 50-100
 
-        retrieved_entries = [self._archival_memory[idx] for idx in retrieved_indices]
+        # Process semantic results
+        for i, (idx, score) in enumerate(semantic_results):
+            rank = i + 1
+            fused_scores[idx] = fused_scores.get(idx, 0.0) + (1.0 / (RRF_K + rank))
 
-        # Sort by turn_id for chronological presentation
+        # Process keyword results
+        for i, (idx, dummy_score, rank) in enumerate(keyword_results_rrf):
+            # If an item also appeared in semantic search, its rank might be different.
+            # We use its rank from the keyword search here.
+            fused_scores[idx] = fused_scores.get(idx, 0.0) + (1.0 / (RRF_K + rank))
+
+        # Sort by fused RRF score
+        reranked_archival_indices = sorted(
+            fused_scores.keys(),
+            key=lambda idx: fused_scores[idx],
+            reverse=True
+        )[:self.archival_top_k] # Limit to top-k after RRF
+
+        retrieved_entries = [self._archival_memory[idx] for idx in reranked_archival_indices]
+
+        # Sort by turn_id for chronological presentation (within the RRF-selected top-k)
         retrieved_entries.sort(key=lambda e: e.turn_id)
 
         # 3. Build context

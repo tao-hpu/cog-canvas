@@ -1,0 +1,1 @@
+This is a test document about PostgreSQL database. We decided to use PostgreSQL for its JSONB support. The team has 5 engineers working on this project.

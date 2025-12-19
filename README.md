@@ -44,6 +44,27 @@ pip install -e .
 
 ### 2. Environment Configuration
 
+**For Experiments (Python 3.10+ required):**
+
+Some experiment baselines (e.g., GraphRAG) require Python 3.10+. We recommend using conda:
+
+```bash
+# Create and activate py310 environment
+conda create -n py310 python=3.10 -y
+conda activate py310
+
+# Install llvmlite/numba via conda (avoids cmake issues)
+conda install -y llvmlite numba
+
+# Install the package
+pip install -e .
+
+# Install GraphRAG for baseline comparison
+pip install graphrag
+```
+
+**Basic Setup:**
+
 Copy the example environment file and fill in your API keys:
 
 ```bash
