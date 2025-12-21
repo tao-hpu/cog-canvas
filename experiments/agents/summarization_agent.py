@@ -14,6 +14,7 @@ import os
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
+from experiments.llm_utils import call_llm_with_retry
 
 
 class SummarizationAgent(Agent):
@@ -42,12 +43,13 @@ class SummarizationAgent(Agent):
             retain_recent: Number of recent turns to keep alongside summary
         """
         from dotenv import load_dotenv
+
         load_dotenv()
 
         self.retain_recent = retain_recent
 
-        # Use MODEL_WEAK_2 by default (same as other agents for fair comparison)
-        self.model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
+        # Use MODEL_DEFAULT by default (same as other agents for fair comparison)
+        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
 
         # Initialize LLM client
         self._client = None
@@ -107,10 +109,7 @@ class SummarizationAgent(Agent):
         """
         # Generate summary of history that will be "lost"
         # (everything before the retained turns)
-        turns_to_summarize = [
-            t for t in self._history
-            if t not in retained_turns
-        ]
+        turns_to_summarize = [t for t in self._history if t not in retained_turns]
 
         if turns_to_summarize:
             self._summary = self._generate_summary(turns_to_summarize)
@@ -149,13 +148,13 @@ Provide a comprehensive summary:"""
             return "[Mock summary: Important decisions and facts were discussed.]"
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"[Summary generation error: {e}]"
 
@@ -176,11 +175,14 @@ Provide a comprehensive summary:"""
             context_parts.append(self._summary)
             context_parts.append("")
 
-        if self._retained_history:
+        # Use _history (includes post-compression turns) instead of _retained_history
+        if self._history:
             context_parts.append("## Recent Conversation")
-            context_parts.append(self._format_history(self._retained_history))
+            context_parts.append(self._format_history(self._history))
 
-        context = "\n".join(context_parts) if context_parts else "[No context available]"
+        context = (
+            "\n".join(context_parts) if context_parts else "[No context available]"
+        )
 
         # Generate answer
         answer = self._generate_answer(context, question)
@@ -228,12 +230,12 @@ Provide a concise, direct answer based only on the information above."""
             return "I don't have enough information to answer this question."
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"Error generating answer: {e}"

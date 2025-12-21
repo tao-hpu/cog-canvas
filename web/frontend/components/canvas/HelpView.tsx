@@ -64,6 +64,18 @@ export function HelpView() {
             <Badge className="bg-orange-500 hover:bg-orange-600 w-24 justify-center">INSIGHT</Badge>
             <span className="text-sm text-muted-foreground text-right">Learned patterns</span>
           </div>
+          <div className="flex items-center justify-between">
+            <Badge className="bg-amber-700 hover:bg-amber-800 w-24 justify-center">PERSON ATTRIBUTE</Badge>
+            <span className="text-sm text-muted-foreground text-right">Attributes of a person</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <Badge className="bg-cyan-500 hover:bg-cyan-600 w-24 justify-center">EVENT</Badge>
+            <span className="text-sm text-muted-foreground text-right">Key actions or occurrences</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <Badge className="bg-gray-500 hover:bg-gray-600 w-24 justify-center">RELATIONSHIP</Badge>
+            <span className="text-sm text-muted-foreground text-right">Connections between objects</span>
+          </div>
         </CardContent>
       </Card>
 

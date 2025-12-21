@@ -41,7 +41,11 @@ from experiments.locomo_adapter import (
     load_locomo,
     convert_to_eval_format,
     LoCoMoConversation,
-    LoCoMoQAPair
+    LoCoMoQAPair,
+)
+from experiments.extraction_cache import (
+    ExtractionCache,
+    ExtractionConfig,
 )
 
 
@@ -49,9 +53,11 @@ from experiments.locomo_adapter import (
 # Scoring
 # =============================================================================
 
+
 @dataclass
 class LoCoMoScoreResult:
     """Result of scoring a LoCoMo answer."""
+
     keyword_overlap: float  # Fraction of answer keywords found (0-1)
     exact_match: bool  # Whether exact answer appears in response
     found_keywords: List[str]
@@ -83,20 +89,50 @@ def extract_keywords(text: str) -> List[str]:
     """
     # Common stop words to ignore
     stop_words = {
-        'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-        'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-        'to', 'was', 'will', 'with', 'the', 'this', 'but', 'they', 'have',
-        'had', 'what', 'when', 'where', 'who', 'which', 'why', 'how'
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "has",
+        "he",
+        "in",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "that",
+        "the",
+        "to",
+        "was",
+        "will",
+        "with",
+        "the",
+        "this",
+        "but",
+        "they",
+        "have",
+        "had",
+        "what",
+        "when",
+        "where",
+        "who",
+        "which",
+        "why",
+        "how",
     }
 
     # Tokenize: split on whitespace and punctuation
-    tokens = re.findall(r'\b\w+\b', text.lower())
+    tokens = re.findall(r"\b\w+\b", text.lower())
 
     # Filter
-    keywords = [
-        t for t in tokens
-        if len(t) >= 2 and t not in stop_words
-    ]
+    keywords = [t for t in tokens if len(t) >= 2 and t not in stop_words]
 
     return keywords
 
@@ -143,7 +179,7 @@ def score_locomo_answer(answer: str, ground_truth: str) -> LoCoMoScoreResult:
         found_keywords=found,
         missing_keywords=missing,
         answer=answer,
-        ground_truth=ground_truth
+        ground_truth=ground_truth,
     )
 
 
@@ -151,9 +187,11 @@ def score_locomo_answer(answer: str, ground_truth: str) -> LoCoMoScoreResult:
 # Results
 # =============================================================================
 
+
 @dataclass
 class LoCoMoQuestionResult:
     """Result for a single LoCoMo question."""
+
     question: str
     category: int
     category_name: str
@@ -167,6 +205,7 @@ class LoCoMoQuestionResult:
 @dataclass
 class LoCoMoConversationResult:
     """Result for a single LoCoMo conversation."""
+
     conversation_id: str
     num_turns: int
     compression_turn: int
@@ -178,33 +217,42 @@ class LoCoMoConversationResult:
         """Fraction of questions passed."""
         if not self.question_results:
             return 0.0
-        return sum(1 for r in self.question_results if r.score.passed) / len(self.question_results)
+        return sum(1 for r in self.question_results if r.score.passed) / len(
+            self.question_results
+        )
 
     @property
     def exact_match_rate(self) -> float:
         """Fraction of questions with exact match."""
         if not self.question_results:
             return 0.0
-        return sum(1 for r in self.question_results if r.score.exact_match) / len(self.question_results)
+        return sum(1 for r in self.question_results if r.score.exact_match) / len(
+            self.question_results
+        )
 
     @property
     def avg_keyword_overlap(self) -> float:
         """Average keyword overlap across all questions."""
         if not self.question_results:
             return 0.0
-        return sum(r.score.keyword_overlap for r in self.question_results) / len(self.question_results)
+        return sum(r.score.keyword_overlap for r in self.question_results) / len(
+            self.question_results
+        )
 
     def accuracy_by_category(self, category: int) -> float:
         """Accuracy for specific category."""
         category_results = [r for r in self.question_results if r.category == category]
         if not category_results:
             return 0.0
-        return sum(1 for r in category_results if r.score.passed) / len(category_results)
+        return sum(1 for r in category_results if r.score.passed) / len(
+            category_results
+        )
 
 
 @dataclass
 class LoCoMoExperimentResult:
     """Result for complete LoCoMo experiment."""
+
     agent_name: str
     conversation_results: List[LoCoMoConversationResult]
     config: Dict[str, Any]
@@ -215,32 +263,40 @@ class LoCoMoExperimentResult:
         """Overall accuracy across all conversations."""
         if not self.conversation_results:
             return 0.0
-        return sum(c.accuracy for c in self.conversation_results) / len(self.conversation_results)
+        return sum(c.accuracy for c in self.conversation_results) / len(
+            self.conversation_results
+        )
 
     @property
     def overall_exact_match_rate(self) -> float:
         """Overall exact match rate."""
         if not self.conversation_results:
             return 0.0
-        return sum(c.exact_match_rate for c in self.conversation_results) / len(self.conversation_results)
+        return sum(c.exact_match_rate for c in self.conversation_results) / len(
+            self.conversation_results
+        )
 
     @property
     def overall_keyword_overlap(self) -> float:
         """Overall keyword overlap."""
         if not self.conversation_results:
             return 0.0
-        return sum(c.avg_keyword_overlap for c in self.conversation_results) / len(self.conversation_results)
+        return sum(c.avg_keyword_overlap for c in self.conversation_results) / len(
+            self.conversation_results
+        )
 
     def accuracy_by_category(self, category: int) -> float:
         """Overall accuracy for specific category."""
         category_results = []
         for conv in self.conversation_results:
-            category_results.extend([
-                r for r in conv.question_results if r.category == category
-            ])
+            category_results.extend(
+                [r for r in conv.question_results if r.category == category]
+            )
         if not category_results:
             return 0.0
-        return sum(1 for r in category_results if r.score.passed) / len(category_results)
+        return sum(1 for r in category_results if r.score.passed) / len(
+            category_results
+        )
 
     def summary(self) -> Dict[str, Any]:
         """Get summary of results."""
@@ -299,6 +355,7 @@ class LoCoMoExperimentResult:
 # Runner
 # =============================================================================
 
+
 class LoCoMoExperimentRunner:
     """
     Runs LoCoMo evaluation experiments.
@@ -319,6 +376,8 @@ class LoCoMoExperimentRunner:
         compression_at_middle: bool = True,
         compression_turn: Optional[int] = None,
         retain_recent: int = 5,
+        cache_dir: Optional[str] = None,
+        use_cache: bool = False,
     ):
         """
         Initialize LoCoMo runner.
@@ -328,11 +387,18 @@ class LoCoMoExperimentRunner:
             compression_at_middle: If True, compress at conversation midpoint
             compression_turn: Fixed compression turn (overrides compression_at_middle)
             retain_recent: Number of recent turns to retain after compression
+            cache_dir: Directory for extraction cache (default: experiments/cache/extraction)
+            use_cache: Whether to use cached extractions
         """
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
         self.retain_recent = retain_recent
         self.conversations = self._load_dataset(dataset_path)
+
+        # Cache support
+        self.use_cache = use_cache
+        self.cache_dir = cache_dir or "experiments/cache/extraction"
+        self._cache = ExtractionCache(self.cache_dir) if use_cache else None
 
     def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
         """Load and convert LoCoMo dataset."""
@@ -346,10 +412,11 @@ class LoCoMoExperimentRunner:
         self,
         agent: Agent,
         num_samples: Optional[int] = None,
-        verbose: bool = True,
+        verbose: int = 1,
         max_workers: int = 1,
         agent_factory: Optional[callable] = None,
         max_questions_per_conv: Optional[int] = None,
+        categories: Optional[List[int]] = None,
     ) -> LoCoMoExperimentResult:
         """
         Run LoCoMo experiment.
@@ -357,10 +424,11 @@ class LoCoMoExperimentRunner:
         Args:
             agent: Agent to evaluate
             num_samples: Number of conversations to evaluate (None = all)
-            verbose: Print progress
+            verbose: Verbosity level (0=quiet, 1=progress, 2=detailed)
             max_workers: Number of parallel workers
             agent_factory: Factory for creating agent instances (required for parallel)
             max_questions_per_conv: Limit questions per conversation (for faster testing)
+            categories: Filter by question categories (e.g., [1,2,3] for memory-focused questions)
 
         Returns:
             LoCoMoExperimentResult
@@ -369,15 +437,33 @@ class LoCoMoExperimentRunner:
         if num_samples:
             conversations = conversations[:num_samples]
 
-        if verbose:
+        # Get extraction config for cache key (only for CogCanvas agents)
+        extraction_config = None
+        if self.use_cache and hasattr(agent, 'get_extraction_config'):
+            extraction_config = agent.get_extraction_config()
+
+        if verbose >= 1:
             print(f"\n{'='*60}")
             print(f"LoCoMo Experiment: {agent.name}")
             print(f"Conversations: {len(conversations)}")
-            print(f"Compression: {'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'}")
+            print(
+                f"Compression: {'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'}"
+            )
             print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
+            print(f"Verbose level: {verbose}")
             if max_questions_per_conv:
                 print(f"Max questions per conversation: {max_questions_per_conv}")
+            if categories:
+                # Count filtered questions
+                total_filtered = sum(
+                    len([qa for qa in c.qa_pairs if qa.category in categories])
+                    for c in conversations
+                )
+                print(f"Categories filter: {categories} ({total_filtered} questions)")
+            if self.use_cache:
+                cache_hash = extraction_config.to_hash() if extraction_config else "N/A"
+                print(f"Cache: ENABLED (config hash: {cache_hash})")
             print(f"{'='*60}\n")
 
         results = []
@@ -386,22 +472,31 @@ class LoCoMoExperimentRunner:
             if agent_factory is None:
                 raise ValueError("agent_factory is required for parallel execution")
             results = self._run_parallel(
-                conversations, agent_factory, max_workers, verbose, max_questions_per_conv
+                conversations,
+                agent_factory,
+                max_workers,
+                verbose,
+                max_questions_per_conv,
+                categories,
+                extraction_config,
             )
         else:
             for i, conv in enumerate(conversations):
-                if verbose:
+                if verbose >= 1:
                     print(f"[{i+1}/{len(conversations)}] Conversation {conv.id}")
 
                 result = self._run_single_conversation(
-                    agent, conv, verbose, max_questions_per_conv
+                    agent, conv, verbose, max_questions_per_conv, categories,
+                    extraction_config,
                 )
                 results.append(result)
 
-                if verbose:
-                    print(f"    => Accuracy: {result.accuracy:.0%} | "
-                          f"Exact: {result.exact_match_rate:.0%} | "
-                          f"Overlap: {result.avg_keyword_overlap:.0%}")
+                if verbose >= 1:
+                    print(
+                        f"    => Accuracy: {result.accuracy:.0%} | "
+                        f"Exact: {result.exact_match_rate:.0%} | "
+                        f"Overlap: {result.avg_keyword_overlap:.0%}"
+                    )
 
         experiment_result = LoCoMoExperimentResult(
             agent_name=agent.name,
@@ -412,12 +507,13 @@ class LoCoMoExperimentRunner:
                 "retain_recent": self.retain_recent,
                 "num_samples": num_samples or len(self.conversations),
                 "max_questions_per_conv": max_questions_per_conv,
+                "categories": categories,
                 "benchmark_type": "locomo",
             },
             timestamp=datetime.now().isoformat(),
         )
 
-        if verbose:
+        if verbose >= 1:
             print(f"\n{'='*60}")
             print("LOCOMO RESULTS SUMMARY")
             print(f"{'='*60}")
@@ -431,8 +527,10 @@ class LoCoMoExperimentRunner:
         conversations: List[LoCoMoConversation],
         agent_factory: callable,
         max_workers: int,
-        verbose: bool,
+        verbose: int,
         max_questions_per_conv: Optional[int],
+        categories: Optional[List[int]] = None,
+        extraction_config: Optional[ExtractionConfig] = None,
     ) -> List[LoCoMoConversationResult]:
         """Run conversations in parallel."""
         results = [None] * len(conversations)
@@ -442,22 +540,43 @@ class LoCoMoExperimentRunner:
         def process_conv(
             idx: int, conv: LoCoMoConversation
         ) -> Tuple[int, LoCoMoConversationResult]:
+            # In parallel mode, only use verbose >= 2 for per-question detail
+            conv_verbose = verbose if verbose >= 2 else 0
             try:
                 agent = agent_factory()
+                if verbose >= 2:
+                    with lock:
+                        print(f"  [Starting] {conv.id} ({len(conv.turns)} turns, {len(conv.qa_pairs)} questions)")
                 result = self._run_single_conversation(
-                    agent, conv, verbose=False, max_questions=max_questions_per_conv
+                    agent, conv, verbose=conv_verbose, max_questions=max_questions_per_conv,
+                    categories=categories, extraction_config=extraction_config
                 )
             except Exception as e:
-                print(f"Error in conversation {conv.id}: {e}")
+                print(f"Error in conversation {conv.id}: {e}, skipping...")
                 import traceback
                 traceback.print_exc()
-                raise e
+                # Return empty result instead of crashing
+                result = LoCoMoConversationResult(
+                    conversation_id=conv.id,
+                    num_turns=len(conv.turns),
+                    compression_turn=0,
+                    question_results=[],
+                    total_time_ms=0,
+                )
 
             with lock:
                 completed[0] += 1
-                if verbose:
-                    print(f"[{completed[0]}/{len(conversations)}] {conv.id} => "
-                          f"Accuracy: {result.accuracy:.0%}")
+                if verbose >= 1:
+                    # Show per-question breakdown at -vv
+                    detail = ""
+                    if verbose >= 2:
+                        passed = sum(1 for q in result.question_results if q.score.passed)
+                        total = len(result.question_results)
+                        detail = f" | Passed: {passed}/{total}"
+                    print(
+                        f"[{completed[0]}/{len(conversations)}] {conv.id} => "
+                        f"Accuracy: {result.accuracy:.0%}{detail}"
+                    )
 
             return idx, result
 
@@ -477,8 +596,10 @@ class LoCoMoExperimentRunner:
         self,
         agent: Agent,
         conv: LoCoMoConversation,
-        verbose: bool = False,
+        verbose: int = 0,
         max_questions: Optional[int] = None,
+        categories: Optional[List[int]] = None,
+        extraction_config: Optional[ExtractionConfig] = None,
     ) -> LoCoMoConversationResult:
         """Run experiment on single conversation."""
         agent.reset()
@@ -493,34 +614,80 @@ class LoCoMoExperimentRunner:
         # Ensure compression point is valid
         compression_turn = min(compression_turn, len(conv.turns))
 
-        if verbose:
+        if verbose >= 2:
             print(f"    Compression at turn {compression_turn}/{len(conv.turns)}")
 
-        # Phase 1: Process turns up to compression
-        for turn in conv.turns:
-            if turn.turn_id <= compression_turn:
-                agent.process_turn(turn)
+        # Check cache
+        cache_hit = False
+        if self.use_cache and self._cache and extraction_config:
+            if self._cache.has(conv.id, extraction_config):
+                # Load from cache
+                cached_state = self._cache.load(conv.id, extraction_config)
+                if cached_state and hasattr(agent, 'restore_from_cache'):
+                    agent.restore_from_cache(cached_state)
+                    cache_hit = True
+                    if verbose >= 2:
+                        print(f"    [CACHE HIT] Loaded extraction from cache")
 
-        # Phase 2: Compression
-        retained_turns = [
-            t for t in conv.turns
-            if t.turn_id > compression_turn - self.retain_recent
-            and t.turn_id <= compression_turn
-        ]
-        agent.on_compression(retained_turns)
-
-        # Phase 3: Process remaining turns
-        for turn in conv.turns:
-            if turn.turn_id > compression_turn:
+        if not cache_hit:
+            # Phase 1: Process turns up to compression
+            pre_turns = [t for t in conv.turns if t.turn_id <= compression_turn]
+            if verbose >= 2:
+                print(f"    Phase 1: Processing {len(pre_turns)} pre-compression turns...")
+            for i, turn in enumerate(pre_turns):
                 agent.process_turn(turn)
+                if verbose >= 3 and (i + 1) % 20 == 0:
+                    print(f"      ... processed {i + 1}/{len(pre_turns)} turns")
+
+            # Phase 2: Compression
+            if verbose >= 2:
+                print(f"    Phase 2: Compressing...")
+            retained_turns = [
+                t
+                for t in conv.turns
+                if t.turn_id > compression_turn - self.retain_recent
+                and t.turn_id <= compression_turn
+            ]
+            agent.on_compression(retained_turns)
+
+            # Phase 3: Process remaining turns
+            post_turns = [t for t in conv.turns if t.turn_id > compression_turn]
+            if verbose >= 2:
+                print(f"    Phase 3: Processing {len(post_turns)} post-compression turns...")
+            for i, turn in enumerate(post_turns):
+                agent.process_turn(turn)
+                if verbose >= 3 and (i + 1) % 20 == 0:
+                    print(f"      ... processed {i + 1}/{len(post_turns)} turns")
+
+            # Save to cache after extraction
+            if self.use_cache and self._cache and extraction_config and hasattr(agent, 'get_canvas_state'):
+                canvas_state = agent.get_canvas_state()
+                if canvas_state:
+                    self._cache.save(
+                        conv.id,
+                        extraction_config,
+                        canvas_state,
+                        metadata={"num_objects": len(canvas_state.get("objects", []))}
+                    )
+                    if verbose >= 2:
+                        print(f"    [CACHE SAVE] Saved extraction to cache")
 
         # Phase 4: Ask questions
         qa_pairs = conv.qa_pairs
+
+        # Filter by categories if specified (e.g., [1,2,3] for single-hop/temporal/multi-hop)
+        if categories:
+            qa_pairs = [qa for qa in qa_pairs if qa.category in categories]
+
+        # Limit number of questions if specified
         if max_questions:
             qa_pairs = qa_pairs[:max_questions]
 
+        if verbose >= 2:
+            print(f"    Phase 4: Answering {len(qa_pairs)} questions...")
+
         question_results = []
-        for qa in qa_pairs:
+        for qi, qa in enumerate(qa_pairs):
             q_start = time.time()
             response = agent.answer_question(qa.question)
             latency = (time.time() - q_start) * 1000
@@ -529,24 +696,28 @@ class LoCoMoExperimentRunner:
 
             # Map evidence IDs to turn numbers
             evidence_turns = [
-                conv.dialogue_id_to_turn.get(eid, -1)
-                for eid in qa.evidence
+                conv.dialogue_id_to_turn.get(eid, -1) for eid in qa.evidence
             ]
 
-            if verbose:
+            if verbose >= 2:
                 status = "✓" if score.passed else "✗"
-                print(f"      {status} [{qa.category_name}] {qa.question[:40]:40s} -> {score.keyword_overlap:.0%}")
+                score_display = "EXACT" if score.exact_match else f"{score.keyword_overlap:.0%}"
+                print(
+                    f"      {status} [{conv.id}] [{qa.category_name}] {qa.question[:35]:35s} -> {score_display}"
+                )
 
-            question_results.append(LoCoMoQuestionResult(
-                question=qa.question,
-                category=qa.category,
-                category_name=qa.category_name,
-                evidence_turns=evidence_turns,
-                ground_truth=qa.answer,
-                answer=response.answer,
-                score=score,
-                latency_ms=latency,
-            ))
+            question_results.append(
+                LoCoMoQuestionResult(
+                    question=qa.question,
+                    category=qa.category,
+                    category_name=qa.category_name,
+                    evidence_turns=evidence_turns,
+                    ground_truth=qa.answer,
+                    answer=response.answer,
+                    score=score,
+                    latency_ms=latency,
+                )
+            )
 
         total_time = (time.time() - start_time) * 1000
 
@@ -563,6 +734,7 @@ class LoCoMoExperimentRunner:
 # CLI
 # =============================================================================
 
+
 def main():
     import argparse
     import os
@@ -574,33 +746,56 @@ def main():
     load_dotenv(project_root / ".env")
 
     # Configure OpenAI API
-    os.environ['OPENAI_API_KEY'] = os.getenv('API_KEY', '')
-    os.environ['OPENAI_API_BASE'] = os.getenv('API_BASE', '')
+    os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY", "")
+    os.environ["OPENAI_API_BASE"] = os.getenv("API_BASE", "")
 
     parser = argparse.ArgumentParser(description="Run LoCoMo evaluation experiments")
     parser.add_argument(
-        "--dataset", "-d",
+        "--dataset",
+        "-d",
         default="experiments/data/locomo10.json",
         help="Path to LoCoMo dataset JSON file",
     )
     parser.add_argument(
-        "--agent", "-a",
+        "--agent",
+        "-a",
         choices=[
-            "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-boost",
-            "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
-            "native", "summarization", "rag", "memgpt-lite", "graphrag-lite", "graphrag"
+            "cogcanvas",
+            "cogcanvas-nograph",
+            "cogcanvas-filter",
+            "cogcanvas-boost",
+            "cogcanvas-baseline",
+            "cogcanvas-temporal",
+            "cogcanvas-hybrid",
+            "cogcanvas-cot",
+            "cogcanvas-3hop",
+            "cogcanvas-3hop-rerank",  # New enhanced variants
+            "cogcanvas-vage",  # Rule-based VAGE
+            "cogcanvas-vage-learned",  # Learned VAGE
+            "cogcanvas-vage-chain",  # Chain-Level VAGE (graph-aware)
+            "cogcanvas-cot-v2",  # CoT V2 prompt
+            "cogcanvas-cot-fusion",  # CoT Fusion prompt
+            "native",
+            "summarization",
+            "rag",
+            "rag-rerank",
+            "memgpt-lite",
+            "graphrag-lite",
+            "graphrag",
         ],
         default="cogcanvas",
         help="Agent to evaluate",
     )
     parser.add_argument(
-        "--samples", "-n",
+        "--samples",
+        "-n",
         type=int,
         default=None,
         help="Number of conversations to evaluate (default: all)",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default=None,
         help="Output file for results (JSON)",
     )
@@ -617,16 +812,51 @@ def main():
         help="Number of recent turns to retain",
     )
     parser.add_argument(
-        "--workers", "-w",
+        "--workers",
+        "-w",
         type=int,
-        default=1,
+        default=10,
         help="Number of parallel workers (default: 1)",
     )
     parser.add_argument(
         "--max-questions",
         type=int,
         default=None,
-        help="Max questions per conversation (for testing)",
+        help="Max questions per conversation (for quick testing)",
+    )
+    parser.add_argument(
+        "--categories",
+        type=str,
+        default=None,
+        help="Filter by question categories, e.g. '1,2,3' for single-hop/temporal/multi-hop only",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Verbose output (-v for progress, -vv for detailed question results)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default="experiments/cache/extraction",
+        help="Directory for extraction cache (default: experiments/cache/extraction)",
+    )
+    parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="Use cached extractions if available (speeds up repeated experiments)",
+    )
+    parser.add_argument(
+        "--vage-mode",
+        choices=["off", "standard", "chain"],
+        default="off",
+        help="VAGE selection mode: off (disabled), standard (original), chain (graph-aware)",
+    )
+    parser.add_argument(
+        "--vage-verbose",
+        action="store_true",
+        help="Print detailed VAGE progress logs",
     )
 
     args = parser.parse_args()
@@ -643,7 +873,7 @@ def main():
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
             "retrieval_method": "hybrid",
-            "prompt_style": "cot"
+            "prompt_style": "cot",
         }
 
         if args.agent == "cogcanvas-nograph":
@@ -655,28 +885,28 @@ def main():
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "semantic",
-                "prompt_style": "direct"
+                "prompt_style": "direct",
             }
         elif args.agent == "cogcanvas-temporal":
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
                 "retrieval_method": "semantic",
-                "prompt_style": "direct"
+                "prompt_style": "direct",
             }
         elif args.agent == "cogcanvas-hybrid":
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "hybrid",
-                "prompt_style": "direct"
+                "prompt_style": "direct",
             }
         elif args.agent == "cogcanvas-cot":
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "semantic",
-                "prompt_style": "cot"
+                "prompt_style": "cot",
             }
         elif args.agent == "cogcanvas-filter":
             # Full config with LLM Filtering (experimental - for LoCoMo improvement)
@@ -697,32 +927,131 @@ def main():
                 "prompt_style": "cot",
                 "retrieval_top_k": 15,  # Increased from 5 to 15
             }
+        elif args.agent == "cogcanvas-3hop":
+            # 3-hop graph expansion (enhanced multi-hop reasoning)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,  # 3-hop expansion
+            }
+        elif args.agent == "cogcanvas-3hop-rerank":
+            # 3-hop + reranking (full enhanced config)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,  # Enable BGE reranker
+            }
+        elif args.agent == "cogcanvas-vage":
+            # Rule-based VAGE (heuristic vulnerability model)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "enable_vage": True,
+                "use_learned_vage": False,
+                "vage_budget_k": 10,
+            }
+        elif args.agent == "cogcanvas-vage-learned":
+            # Learned VAGE (trained vulnerability model)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "enable_vage": True,
+                "use_learned_vage": True,
+                "vage_budget_k": 10,
+            }
+        elif args.agent == "cogcanvas-cot-v2":
+            # CoT V2 prompt style
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot_v2",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+            }
+        elif args.agent == "cogcanvas-cot-fusion":
+            # CoT Fusion prompt style (Multi-Artifact Fusion)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot_fusion",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+            }
+        elif args.agent == "cogcanvas-vage-chain":
+            # Chain-Level VAGE (graph-aware selection)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "vage_mode": "chain",
+            }
+
+        # Apply --vage-mode override if specified
+        if args.vage_mode != "off":
+            config["vage_mode"] = args.vage_mode
+
+        # Apply --vage-verbose if specified
+        if args.vage_verbose:
+            config["vage_verbose"] = True
 
         agent_factory = lambda: CogCanvasAgent(**config)
         agent = agent_factory()
 
     elif args.agent == "rag":
         from experiments.agents.rag_agent import RagAgent
+
         agent = RagAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: RagAgent(retain_recent=args.retain_recent)
+    elif args.agent == "rag-rerank":
+        from experiments.agents.rag_agent import RagAgent
+
+        agent = RagAgent(retain_recent=args.retain_recent, use_reranker=True)
+        agent_factory = lambda: RagAgent(
+            retain_recent=args.retain_recent, use_reranker=True
+        )
     elif args.agent == "native":
         from experiments.agents.native_agent import NativeAgent
+
         agent = NativeAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: NativeAgent(retain_recent=args.retain_recent)
     elif args.agent == "summarization":
         from experiments.agents.summarization_agent import SummarizationAgent
+
         agent = SummarizationAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: SummarizationAgent(retain_recent=args.retain_recent)
     elif args.agent == "memgpt-lite":
         from experiments.agents.memgpt_lite_agent import MemGPTLiteAgent
+
         agent = MemGPTLiteAgent(core_memory_size=args.retain_recent)
         agent_factory = lambda: MemGPTLiteAgent(core_memory_size=args.retain_recent)
     elif args.agent == "graphrag-lite":
         from experiments.agents.graphrag_lite_agent import GraphRAGLiteAgent
+
         agent = GraphRAGLiteAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: GraphRAGLiteAgent(retain_recent=args.retain_recent)
     elif args.agent == "graphrag":
         from experiments.agents.graphrag_agent import create_graphrag_agent
+
         agent = create_graphrag_agent(search_method="local")
         agent_factory = lambda: create_graphrag_agent(search_method="local")
     else:
@@ -734,14 +1063,23 @@ def main():
         compression_at_middle=(args.compression_turn is None),
         compression_turn=args.compression_turn,
         retain_recent=args.retain_recent,
+        cache_dir=args.cache_dir,
+        use_cache=args.use_cache,
     )
+
+    # Parse categories filter
+    categories = None
+    if args.categories:
+        categories = [int(c.strip()) for c in args.categories.split(",")]
 
     result = runner.run(
         agent,
         num_samples=args.samples,
+        verbose=args.verbose + 1,  # default verbose=0 -> level 1, -v -> level 2, -vv -> level 3
         max_workers=args.workers,
         agent_factory=agent_factory,
         max_questions_per_conv=args.max_questions,
+        categories=categories,
     )
 
     # Save results

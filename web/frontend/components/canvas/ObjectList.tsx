@@ -17,6 +17,9 @@ const typeColors: Record<string, { bg: string, text: string, border: string }> =
   key_fact: { bg: 'bg-green-500', text: 'text-green-500', border: 'border-green-500' },
   reminder: { bg: 'bg-purple-500', text: 'text-purple-500', border: 'border-purple-500' },
   insight: { bg: 'bg-orange-500', text: 'text-orange-500', border: 'border-orange-500' },
+  person_attribute: { bg: 'bg-amber-700', text: 'text-amber-700', border: 'border-amber-700' },
+  event: { bg: 'bg-cyan-500', text: 'text-cyan-500', border: 'border-cyan-500' },
+  relationship: { bg: 'bg-gray-500', text: 'text-gray-500', border: 'border-gray-500' },
 };
 
 export function ObjectList({ objects }: ObjectListProps) {
@@ -30,6 +33,9 @@ export function ObjectList({ objects }: ObjectListProps) {
     key_fact: objects.filter(obj => obj.type === 'key_fact').length,
     reminder: objects.filter(obj => obj.type === 'reminder').length,
     insight: objects.filter(obj => obj.type === 'insight').length,
+    person_attribute: objects.filter(obj => obj.type === 'person_attribute').length,
+    event: objects.filter(obj => obj.type === 'event').length,
+    relationship: objects.filter(obj => obj.type === 'relationship').length,
   };
 
   if (objects.length === 0) {
@@ -59,10 +65,11 @@ export function ObjectList({ objects }: ObjectListProps) {
             <TabsTrigger value="todo" className="text-xs px-3 h-7 data-[state=active]:bg-yellow-500/10 data-[state=active]:text-yellow-500 rounded-full border border-transparent data-[state=active]:border-yellow-500/20">Todo ({tabCounts.todo})</TabsTrigger>
             <TabsTrigger value="key_fact" className="text-xs px-3 h-7 data-[state=active]:bg-green-500/10 data-[state=active]:text-green-500 rounded-full border border-transparent data-[state=active]:border-green-500/20">Fact ({tabCounts.key_fact})</TabsTrigger>
             <TabsTrigger value="reminder" className="text-xs px-3 h-7 data-[state=active]:bg-purple-500/10 data-[state=active]:text-purple-500 rounded-full border border-transparent data-[state=active]:border-purple-500/20">Rem ({tabCounts.reminder})</TabsTrigger>
-            <TabsTrigger value="insight" className="text-xs px-3 h-7 data-[state=active]:bg-orange-500/10 data-[state=active]:text-orange-500 rounded-full border border-transparent data-[state=active]:border-orange-500/20">Ins ({tabCounts.insight})</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+            <TabsTrigger value="insight" className="text-xs px-3 h-7 data-[state=active]:bg-orange-500/10 data-[state=active]:text-orange-500 rounded-full border data-[state=active]:border-orange-500/20">Ins ({tabCounts.insight})</TabsTrigger>
+            <TabsTrigger value="person_attribute" className="text-xs px-3 h-7 data-[state=active]:bg-amber-700/10 data-[state=active]:text-amber-700 rounded-full border data-[state=active]:border-amber-700/20">Person ({tabCounts.person_attribute})</TabsTrigger>
+            <TabsTrigger value="event" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/10 data-[state=active]:text-cyan-500 rounded-full border data-[state=active]:border-cyan-500/20">Event ({tabCounts.event})</TabsTrigger>
+            <TabsTrigger value="relationship" className="text-xs px-3 h-7 data-[state=active]:bg-gray-500/10 data-[state=active]:text-gray-500 rounded-full border data-[state=active]:border-gray-500/20">Rel ({tabCounts.relationship})</TabsTrigger>
+
 
       <div className="flex-1 overflow-y-auto px-4 chat-scrollbar">
         <div className="space-y-3 py-4">

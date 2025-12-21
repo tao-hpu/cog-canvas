@@ -32,12 +32,18 @@ import networkx as nx
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
-from cogcanvas.embeddings import APIEmbeddingBackend, MockEmbeddingBackend, batch_cosine_similarity
+from experiments.llm_utils import call_llm_with_retry
+from cogcanvas.embeddings import (
+    APIEmbeddingBackend,
+    MockEmbeddingBackend,
+    batch_cosine_similarity,
+)
 
 
 @dataclass
 class Entity:
     """Extracted entity from conversation."""
+
     name: str
     type: str  # PERSON, TECHNOLOGY, CONCEPT, DECISION, FACT, etc.
     description: str
@@ -48,6 +54,7 @@ class Entity:
 @dataclass
 class Relation:
     """Relation between entities."""
+
     source: str
     target: str
     type: str  # CO_OCCUR, DEPENDS_ON, DECIDES, etc.
@@ -92,7 +99,7 @@ Only output the JSON array, no other text."""
         embedding_model: str = None,
         retain_recent: int = 5,
         max_hops: int = 1,  # Max hops for neighbor expansion
-        top_k_entities: int = 5,  # Max entities to retrieve
+        top_k_entities: int = 10,  # Max entities to retrieve
         use_llm_extraction: bool = True,  # Use LLM for entity extraction
     ):
         """
@@ -107,6 +114,7 @@ Only output the JSON array, no other text."""
             use_llm_extraction: Whether to use LLM for entity extraction
         """
         from dotenv import load_dotenv
+
         load_dotenv()
 
         self.retain_recent = retain_recent
@@ -115,8 +123,10 @@ Only output the JSON array, no other text."""
         self.use_llm_extraction = use_llm_extraction
 
         # Models
-        self.model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
-        embed_model_name = embedding_model or os.getenv("EMBEDDING_MODEL", "bge-large-zh-v1.5")
+        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        embed_model_name = embedding_model or os.getenv(
+            "EMBEDDING_MODEL", "bge-large-zh-v1.5"
+        )
 
         # Initialize LLM client
         self._client = None
@@ -124,13 +134,21 @@ Only output the JSON array, no other text."""
 
         # Initialize Embedding backend
         try:
-            embed_api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            embed_api_base = os.getenv("EMBEDDING_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            embed_api_key = (
+                os.getenv("EMBEDDING_API_KEY")
+                or os.getenv("API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+            )
+            embed_api_base = (
+                os.getenv("EMBEDDING_API_BASE")
+                or os.getenv("API_BASE")
+                or os.getenv("OPENAI_API_BASE")
+            )
             if embed_api_key:
                 self.embedder = APIEmbeddingBackend(
                     model=embed_model_name,
                     api_key=embed_api_key,
-                    api_base=embed_api_base
+                    api_base=embed_api_base,
                 )
             else:
                 print("Warning: EMBEDDING_API_KEY not set, using mock embeddings")
@@ -152,6 +170,7 @@ Only output the JSON array, no other text."""
         """Initialize LLM client."""
         try:
             from openai import OpenAI
+
             api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
             api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
@@ -181,10 +200,7 @@ Only output the JSON array, no other text."""
         Handle compression: Extract entities from old turns and build graph.
         """
         # Identify turns to process into graph
-        turns_to_process = [
-            t for t in self._history
-            if t not in retained_turns
-        ]
+        turns_to_process = [t for t in self._history if t not in retained_turns]
 
         if turns_to_process:
             self._process_turns_to_graph(turns_to_process)
@@ -208,14 +224,16 @@ Only output the JSON array, no other text."""
             # Create co-occurrence relations
             if len(entities) > 1:
                 for i, e1 in enumerate(entities):
-                    for e2 in entities[i+1:]:
-                        self._add_relation(Relation(
-                            source=self._normalize_name(e1.name),
-                            target=self._normalize_name(e2.name),
-                            type="CO_OCCUR",
-                            source_turn=turn.turn_id,
-                            description=f"Co-occurred in turn {turn.turn_id}"
-                        ))
+                    for e2 in entities[i + 1 :]:
+                        self._add_relation(
+                            Relation(
+                                source=self._normalize_name(e1.name),
+                                target=self._normalize_name(e2.name),
+                                type="CO_OCCUR",
+                                source_turn=turn.turn_id,
+                                description=f"Co-occurred in turn {turn.turn_id}",
+                            )
+                        )
 
     def _extract_entities(self, text: str, turn_id: int) -> List[Entity]:
         """Extract entities using LLM or fallback to regex."""
@@ -229,17 +247,17 @@ Only output the JSON array, no other text."""
         prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=text)
 
         try:
-            response = self._client.chat.completions.create(
+            content = call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
                 temperature=0,
             )
-            content = response.choices[0].message.content
 
             # Parse JSON
             # Find JSON array in response
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            json_match = re.search(r"\[.*\]", content, re.DOTALL)
             if json_match:
                 entities_data = json.loads(json_match.group())
             else:
@@ -251,7 +269,7 @@ Only output the JSON array, no other text."""
                     name=item.get("name", ""),
                     type=item.get("type", "CONCEPT"),
                     description=item.get("description", ""),
-                    source_turns=[turn_id]
+                    source_turns=[turn_id],
                 )
                 if entity.name:
                     entities.append(entity)
@@ -269,56 +287,64 @@ Only output the JSON array, no other text."""
 
         # Technology names
         tech_patterns = [
-            (r'\b(postgresql|mysql|mongodb|sqlite|redis|memcached)\b', 'TECHNOLOGY'),
-            (r'\b(fastapi|flask|django|express|react|vue|angular)\b', 'TECHNOLOGY'),
-            (r'\b(aws|azure|gcp|google cloud|digitalocean)\b', 'TECHNOLOGY'),
-            (r'\b(docker|kubernetes|terraform)\b', 'TECHNOLOGY'),
-            (r'\b(oauth|jwt|api key)\b', 'TECHNOLOGY'),
+            (r"\b(postgresql|mysql|mongodb|sqlite|redis|memcached)\b", "TECHNOLOGY"),
+            (r"\b(fastapi|flask|django|express|react|vue|angular)\b", "TECHNOLOGY"),
+            (r"\b(aws|azure|gcp|google cloud|digitalocean)\b", "TECHNOLOGY"),
+            (r"\b(docker|kubernetes|terraform)\b", "TECHNOLOGY"),
+            (r"\b(oauth|jwt|api key)\b", "TECHNOLOGY"),
         ]
 
         for pattern, entity_type in tech_patterns:
             matches = re.findall(pattern, text_lower)
             for match in matches:
-                entities.append(Entity(
-                    name=match,
-                    type=entity_type,
-                    description=f"Technology mentioned in conversation",
-                    source_turns=[turn_id]
-                ))
+                entities.append(
+                    Entity(
+                        name=match,
+                        type=entity_type,
+                        description=f"Technology mentioned in conversation",
+                        source_turns=[turn_id],
+                    )
+                )
 
         # Numbers with context
         number_patterns = re.findall(
-            r'(\d+(?:\.\d+)?)\s*(gb|tb|mb|kb|%|requests?|hours?|minutes?|days?|weeks?|engineers?|developers?|dollars?|\$)',
-            text_lower
+            r"(\d+(?:\.\d+)?)\s*(gb|tb|mb|kb|%|requests?|hours?|minutes?|days?|weeks?|engineers?|developers?|dollars?|\$)",
+            text_lower,
         )
         for num, unit in number_patterns:
-            entities.append(Entity(
-                name=f"{num} {unit}",
-                type="NUMBER",
-                description=f"Numeric value mentioned",
-                source_turns=[turn_id]
-            ))
+            entities.append(
+                Entity(
+                    name=f"{num} {unit}",
+                    type="NUMBER",
+                    description=f"Numeric value mentioned",
+                    source_turns=[turn_id],
+                )
+            )
 
         # Dollar amounts
-        dollar_matches = re.findall(r'\$[\d,]+(?:\.\d{2})?', text)
+        dollar_matches = re.findall(r"\$[\d,]+(?:\.\d{2})?", text)
         for match in dollar_matches:
-            entities.append(Entity(
-                name=match,
-                type="NUMBER",
-                description="Dollar amount",
-                source_turns=[turn_id]
-            ))
+            entities.append(
+                Entity(
+                    name=match,
+                    type="NUMBER",
+                    description="Dollar amount",
+                    source_turns=[turn_id],
+                )
+            )
 
         # Quoted strings (often important)
         quoted = re.findall(r'"([^"]+)"', text)
         for q in quoted:
             if len(q) < 50 and len(q) > 2:
-                entities.append(Entity(
-                    name=q,
-                    type="CONCEPT",
-                    description="Quoted term",
-                    source_turns=[turn_id]
-                ))
+                entities.append(
+                    Entity(
+                        name=q,
+                        type="CONCEPT",
+                        description="Quoted term",
+                        source_turns=[turn_id],
+                    )
+                )
 
         return entities
 
@@ -345,7 +371,7 @@ Only output the JSON array, no other text."""
                 type=entity.type,
                 description=entity.description,
                 name=entity.name,  # Original name
-                source_turns=entity.source_turns
+                source_turns=entity.source_turns,
             )
 
     def _add_relation(self, relation: Relation) -> None:
@@ -357,13 +383,10 @@ Only output the JSON array, no other text."""
             if self.graph.has_edge(relation.source, relation.target):
                 # Update existing edge
                 edge_data = self.graph[relation.source][relation.target]
-                edge_data['count'] = edge_data.get('count', 1) + 1
+                edge_data["count"] = edge_data.get("count", 1) + 1
             else:
                 self.graph.add_edge(
-                    relation.source,
-                    relation.target,
-                    type=relation.type,
-                    count=1
+                    relation.source, relation.target, type=relation.type, count=1
                 )
 
     def answer_question(self, question: str) -> AgentResponse:
@@ -385,18 +408,23 @@ Only output the JSON array, no other text."""
         # 5. Add recent history
         context_parts = []
         if graph_context:
-            context_parts.append("## Knowledge Graph Context (from earlier conversation)")
+            context_parts.append(
+                "## Knowledge Graph Context (from earlier conversation)"
+            )
             context_parts.append(graph_context)
             context_parts.append("")
 
-        if self._retained_history:
+        # Use _history (includes post-compression turns) instead of _retained_history
+        if self._history:
             context_parts.append("## Recent Conversation")
-            for turn in self._retained_history:
+            for turn in self._history:
                 context_parts.append(f"User: {turn.user}")
                 context_parts.append(f"Assistant: {turn.assistant}")
                 context_parts.append("")
 
-        context = "\n".join(context_parts) if context_parts else "[No context available]"
+        context = (
+            "\n".join(context_parts) if context_parts else "[No context available]"
+        )
 
         # 6. Generate answer
         answer = self._generate_answer(context, question)
@@ -411,10 +439,12 @@ Only output the JSON array, no other text."""
                 "graph_edges": self.graph.number_of_edges(),
                 "matched_entities": len(matched_nodes),
                 "context_entities": len(context_nodes),
-            }
+            },
         )
 
-    def _match_entities_in_graph(self, question_entities: List[Entity], question: str) -> Set[str]:
+    def _match_entities_in_graph(
+        self, question_entities: List[Entity], question: str
+    ) -> Set[str]:
         """Match question entities to graph nodes using fuzzy + embedding."""
         matched = set()
 
@@ -446,15 +476,15 @@ Only output the JSON array, no other text."""
 
                 if node_texts:
                     node_embeddings = self.embedder.embed_batch(node_texts)
-                    similarities = batch_cosine_similarity(question_embedding, node_embeddings)
+                    similarities = batch_cosine_similarity(
+                        question_embedding, node_embeddings
+                    )
 
                     # Get top-k similar nodes
                     scored = sorted(
-                        zip(node_names, similarities),
-                        key=lambda x: x[1],
-                        reverse=True
+                        zip(node_names, similarities), key=lambda x: x[1], reverse=True
                     )
-                    for node, score in scored[:self.top_k_entities]:
+                    for node, score in scored[: self.top_k_entities]:
                         if score > 0.3:  # Threshold
                             matched.add(node)
             except Exception:
@@ -503,7 +533,7 @@ Only output the JSON array, no other text."""
         for node in nodes:
             if node in self.graph:
                 data = self.graph.nodes[node]
-                entity_type = data.get('type', 'UNKNOWN')
+                entity_type = data.get("type", "UNKNOWN")
                 if entity_type not in by_type:
                     by_type[entity_type] = []
                 by_type[entity_type].append(node)
@@ -513,9 +543,9 @@ Only output the JSON array, no other text."""
             context_parts.append(f"### {entity_type}")
             for node in sorted(type_nodes):
                 data = self.graph.nodes[node]
-                name = data.get('name', node)
-                desc = data.get('description', '')
-                turns = data.get('source_turns', [])
+                name = data.get("name", node)
+                desc = data.get("description", "")
+                turns = data.get("source_turns", [])
                 turns_str = f" (from turns: {turns})" if turns else ""
                 context_parts.append(f"- **{name}**: {desc}{turns_str}")
             context_parts.append("")
@@ -525,9 +555,9 @@ Only output the JSON array, no other text."""
         if subgraph.number_of_edges() > 0:
             context_parts.append("### Relationships")
             for u, v, data in subgraph.edges(data=True):
-                u_name = self.graph.nodes[u].get('name', u)
-                v_name = self.graph.nodes[v].get('name', v)
-                rel_type = data.get('type', 'related_to')
+                u_name = self.graph.nodes[u].get("name", u)
+                v_name = self.graph.nodes[v].get("name", v)
+                rel_type = data.get("type", "related_to")
                 context_parts.append(f"- {u_name} --[{rel_type}]--> {v_name}")
             context_parts.append("")
 
@@ -552,12 +582,12 @@ Provide a concise, direct answer based on the context."""
             return "I don't have enough information."
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"Error: {e}"

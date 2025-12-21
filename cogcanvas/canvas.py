@@ -18,6 +18,9 @@ from cogcanvas.embeddings import (
     batch_cosine_similarity,
 )
 from cogcanvas.graph import CanvasGraph
+from cogcanvas.vage import VAGE, VAGEConfig, VAGEResult
+from cogcanvas.vage_learned import LearnedVAGEWrapper
+
 
 class Canvas:
     """
@@ -46,29 +49,54 @@ class Canvas:
         llm_backend: Optional[LLMBackend] = None,
         embedding_backend: Optional[EmbeddingBackend] = None,
         enable_temporal_heuristic: bool = True,  # New parameter for ablation
+        reference_threshold: float = 0.5,  # Threshold for reference links
+        causal_threshold: float = 0.45,  # Threshold for causal links
+        # VAGE parameters
+        enable_vage: bool = False,  # Enable Vulnerability-Aware Greedy Extraction
+        vage_budget_k: int = 10,  # Maximum objects to keep per turn
+        vage_config: Optional[VAGEConfig] = None,  # Custom VAGE configuration
+        vage_mode: str = "off",  # "off" | "standard" | "chain" (chain uses graph-aware selection)
+        vage_verbose: bool = False,  # Print detailed VAGE logs
+        # Learned VAGE parameters
+        use_learned_vage: bool = False,  # Use trained vulnerability model instead of heuristics
+        vulnerability_model_path: Optional[str] = None,  # Path to trained model
+        schema_model_path: Optional[str] = None,  # Path to learned schema model
     ):
         """
         Initialize a new Canvas.
 
         Args:
             extractor_model: Model to use for extraction (e.g., "gpt-4o-mini", "mock").
-                           Defaults to MODEL_WEAK_2 env var or "mock".
+                           Defaults to MODEL_DEFAULT env var or "mock".
             embedding_model: Model for embeddings (e.g., "BAAI/bge-m3", "mock").
                            Defaults to EMBEDDING_MODEL env var or "mock".
             storage_path: Path to persist canvas state (optional)
             llm_backend: Pre-configured LLM backend (overrides extractor_model)
             embedding_backend: Pre-configured embedding backend (overrides embedding_model)
             enable_temporal_heuristic: Whether to use temporal proximity for causal linking (Rule 4)
+            reference_threshold: Min cosine similarity for 'references' relation (default: 0.5)
+            causal_threshold: Min cosine similarity for 'caused_by' relation (default: 0.45)
+            enable_vage: Enable VAGE (Vulnerability-Aware Greedy Extraction) for optimal selection
+            vage_budget_k: Maximum objects to keep per extraction (only used if enable_vage=True)
+            vage_config: Custom VAGE configuration (optional)
+            vage_mode: VAGE selection mode - "off", "standard" (original), or "chain" (graph-aware)
+            use_learned_vage: Use trained vulnerability model instead of heuristics
+            vulnerability_model_path: Path to trained vulnerability model (.pkl)
+            schema_model_path: Path to learned schema model (.pkl)
         """
         import os
 
         # Load from environment if not specified
-        self.extractor_model = extractor_model or os.environ.get("MODEL_WEAK_2", "mock")
+        self.extractor_model = extractor_model or os.environ.get(
+            "MODEL_DEFAULT", "mock"
+        )
         self.embedding_model = embedding_model or os.environ.get(
             "EMBEDDING_MODEL", "mock"
         )
         self.storage_path = Path(storage_path) if storage_path else None
         self.enable_temporal_heuristic = enable_temporal_heuristic
+        self.reference_threshold = reference_threshold
+        self.causal_threshold = causal_threshold
 
         # Initialize LLM backend
         self._backend = self._init_backend(llm_backend)
@@ -80,6 +108,28 @@ class Canvas:
         self._objects: Dict[str, CanvasObject] = {}
         self._turn_counter: int = 0
         self._graph: CanvasGraph = CanvasGraph()
+
+        # VAGE (Vulnerability-Aware Greedy Extraction)
+        self.enable_vage = enable_vage
+        self.vage_budget_k = vage_budget_k
+        self.use_learned_vage = use_learned_vage
+        self.vage_mode = vage_mode  # "off" | "standard" | "chain"
+        self.vage_verbose = vage_verbose  # Print detailed logs
+
+        # Initialize VAGE (rule-based or learned)
+        # Also enable if vage_mode is set (not "off")
+        effective_enable_vage = enable_vage or vage_mode != "off"
+        if effective_enable_vage:
+            if use_learned_vage:
+                self._vage = LearnedVAGEWrapper(
+                    vulnerability_model_path=vulnerability_model_path,
+                    schema_model_path=schema_model_path,
+                    default_budget_k=vage_budget_k,
+                )
+            else:
+                self._vage = VAGE(vage_config)
+        else:
+            self._vage = None
 
         # Load existing state if available
         if self.storage_path and self.storage_path.exists():
@@ -162,6 +212,7 @@ class Canvas:
         user: str,
         assistant: str,
         metadata: Optional[Dict[str, Any]] = None,
+        session_datetime: Optional[str] = None,
     ) -> ExtractionResult:
         """
         Extract canvas objects from a dialogue turn.
@@ -173,6 +224,10 @@ class Canvas:
             user: The user's message
             assistant: The assistant's response
             metadata: Optional additional context
+            session_datetime: Session timestamp for relative time resolution
+                             (e.g., "1:56 pm on 8 May, 2023"). When provided,
+                             relative times like "yesterday" will be converted
+                             to absolute dates.
 
         Returns:
             ExtractionResult with extracted objects
@@ -182,7 +237,15 @@ class Canvas:
 
         # Use LLM backend for extraction (real or mock)
         existing = list(self._objects.values())
-        objects = self._backend.extract_objects(user, assistant, existing)
+        # Pass turn_id and session_datetime for temporal extraction
+        objects = self._backend.extract_objects(
+            user,
+            assistant,
+            existing,
+            turn_id=self._turn_counter,
+            enable_temporal_fallback=True,
+            session_datetime=session_datetime,
+        )
 
         # Compute embeddings for extracted objects
         if objects:
@@ -191,15 +254,118 @@ class Canvas:
             for obj, embedding in zip(objects, embeddings):
                 obj.embedding = embedding
 
-        # Store extracted objects
+        # Set turn_id for all objects first (needed for VAGE)
         for obj in objects:
             obj.turn_id = self._turn_counter
-            self._objects[obj.id] = obj
-            self._graph.add_node(obj)
 
-        # Infer relationships automatically
-        self._infer_relations(
-            objects, enable_temporal_heuristic=self.enable_temporal_heuristic
+        # VAGE: Vulnerability-Aware Greedy Extraction
+        # Prioritize objects by importance × vulnerability, select top-K
+        filtered_objects = []
+        effective_enable_vage = self.enable_vage or self.vage_mode != "off"
+        if effective_enable_vage and self._vage and objects:
+            # Choose VAGE mode
+            if self.vage_mode == "chain":
+                # Chain-Level VAGE: requires caused_by edges to exist first!
+                # We need to temporarily add objects and infer relations,
+                # then run chain selection, then remove non-selected objects.
+
+                # Step 1: Temporarily add all objects to graph
+                temp_obj_ids = []
+                for obj in objects:
+                    self._objects[obj.id] = obj
+                    self._graph.add_node(obj)
+                    temp_obj_ids.append(obj.id)
+
+                # Step 2: Infer relations (creates caused_by edges)
+                self._infer_relations(
+                    objects,
+                    reference_threshold=self.reference_threshold,
+                    causal_threshold=self.causal_threshold,
+                    enable_temporal_heuristic=self.enable_temporal_heuristic,
+                )
+
+                # Step 3: Now run Chain VAGE with complete graph
+                # Pass new objects as candidates, but allow traversal to all objects
+                vage_result = self._vage.prioritize_chains(
+                    objects=objects,  # New objects (candidates for selection)
+                    total_turns=self._turn_counter,
+                    budget_k=self.vage_budget_k,
+                    graph=self._graph,
+                    all_objects=list(self._objects.values()),  # All objects for chain traversal
+                    verbose=getattr(self, 'vage_verbose', False),
+                )
+
+                # Step 4: Remove non-selected objects from graph and storage
+                selected_indices = set(vage_result.selected_indices)
+                selected_objects = [objects[i] for i in vage_result.selected_indices]
+                filtered_objects = [
+                    objects[i] for i in range(len(objects)) if i not in selected_indices
+                ]
+
+                # Remove non-selected objects
+                for i, obj in enumerate(objects):
+                    if i not in selected_indices:
+                        del self._objects[obj.id]
+                        # Also remove from graph
+                        if obj.id in self._graph._nodes:
+                            self._graph._nodes.remove(obj.id)
+                        # Remove edges involving this object
+                        for rel in self._graph._edges.keys():
+                            if obj.id in self._graph._edges[rel]:
+                                del self._graph._edges[rel][obj.id]
+                            if obj.id in self._graph._reverse_edges[rel]:
+                                del self._graph._reverse_edges[rel][obj.id]
+                            # Remove obj.id from other objects' edge lists
+                            for edges_list in self._graph._edges[rel].values():
+                                if obj.id in edges_list:
+                                    edges_list.remove(obj.id)
+                            for edges_list in self._graph._reverse_edges[rel].values():
+                                if obj.id in edges_list:
+                                    edges_list.remove(obj.id)
+
+                # Store marginal gain as metadata
+                for idx in vage_result.selected_indices:
+                    objects[idx].vage_marginal_gain = vage_result.marginal_gains[idx]
+
+                objects = selected_objects
+                # Relations already inferred, skip the later _infer_relations call
+                skip_relation_inference = True
+            else:
+                # Standard VAGE: select by individual Δ scores
+                vage_result = self._vage.prioritize(
+                    objects=objects,
+                    total_turns=self._turn_counter,
+                    budget_k=self.vage_budget_k,
+                )
+                # Keep only selected objects
+                selected_indices = set(vage_result.selected_indices)
+                selected_objects = [objects[i] for i in vage_result.selected_indices]
+                filtered_objects = [
+                    objects[i] for i in range(len(objects)) if i not in selected_indices
+                ]
+
+                # Store marginal gain as metadata for analysis
+                for idx in vage_result.selected_indices:
+                    objects[idx].vage_marginal_gain = vage_result.marginal_gains[idx]
+
+                objects = selected_objects
+                skip_relation_inference = False
+        else:
+            skip_relation_inference = False
+
+        # Store extracted objects (for non-chain mode)
+        if not (effective_enable_vage and self._vage and self.vage_mode == "chain"):
+            for obj in objects:
+                self._objects[obj.id] = obj
+                self._graph.add_node(obj)
+
+        # Infer relationships automatically (skip if chain mode already did it)
+        if not skip_relation_inference:
+            self._infer_relations(
+                objects,
+                reference_threshold=self.reference_threshold,
+                causal_threshold=self.causal_threshold,
+            enable_temporal_heuristic=self.enable_temporal_heuristic,
         )
 
         # Persist if storage configured
@@ -210,6 +376,8 @@ class Canvas:
             objects=objects,
             extraction_time=time.time() - start_time,
             model_used=self.extractor_model,
+            filtered_objects=filtered_objects,  # Objects filtered out by VAGE
+            filtered_count=len(filtered_objects),
         )
 
     def retrieve(
@@ -460,28 +628,34 @@ class Canvas:
             # Compact JSON without embeddings (save tokens!)
             compact_objs = []
             for obj in objects:
-                compact_objs.append(
-                    {
-                        "type": obj.type.value,
-                        "content": obj.content,
-                        "quote": obj.quote[:100] if obj.quote else "",  # Truncate quote
-                    }
-                )
+                item = {
+                    "type": obj.type.value,
+                    "content": obj.content,
+                    "quote": obj.quote[:100] if obj.quote else "",  # Truncate quote
+                }
+                # Include resolved time for temporal reasoning
+                if obj.event_time:
+                    item["date"] = obj.event_time
+                compact_objs.append(item)
             return json.dumps(compact_objs, separators=(",", ":"))  # No whitespace
 
         if format == "compact":
             # Ultra-compact format for maximum token efficiency
             lines = []
             for obj in objects:
-                type_abbrev = obj.type.value[0].upper()  # D/T/K/R/I
-                lines.append(f"[{type_abbrev}] {obj.content}")
+                type_abbrev = obj.type.value[0].upper()  # D/T/K/R/I/P/E
+                # Include resolved time for temporal questions
+                time_info = f" [Date: {obj.event_time}]" if obj.event_time else ""
+                lines.append(f"[{type_abbrev}] {obj.content}{time_info}")
             return "\n".join(lines)
 
         # Default: markdown (most readable)
         lines = ["## Relevant Context from This Conversation\n"]
         for obj in objects:
             type_label = obj.type.value.replace("_", " ").title()
-            line = f"- **[{type_label}]** {obj.content}"
+            # Include resolved time for temporal reasoning
+            time_suffix = f" *(Date: {obj.event_time})*" if obj.event_time else ""
+            line = f"- **[{type_label}]** {obj.content}{time_suffix}"
             # Add grounding quote if available (reviewers love verifiable sources!)
             if obj.quote:
                 truncated = (
@@ -1114,6 +1288,51 @@ class Canvas:
                 # Link top 3
                 for constraint in recent_constraints[:3]:
                     self.link(new_obj.id, constraint.id, "caused_by")
+
+            # Rule 5: EVENTs reference PERSON_ATTRIBUTEs (event involves a person)
+            # e.g., "Caroline attended support group" references "Caroline is transgender"
+            if new_obj.type == ObjectType.EVENT:
+                for existing_obj, sim in zip(existing_with_embeddings, similarities):
+                    if existing_obj.type == ObjectType.PERSON_ATTRIBUTE:
+                        # Check for person name overlap
+                        existing_keywords = get_keywords(existing_obj.content)
+                        overlap = (
+                            not new_keywords.isdisjoint(existing_keywords)
+                            if (new_keywords and existing_keywords)
+                            else False
+                        )
+                        # Link if name/keyword overlap or high semantic similarity
+                        if overlap or sim >= reference_threshold:
+                            self.link(new_obj.id, existing_obj.id, "references")
+
+            # Rule 6: RELATIONSHIPs reference PERSON_ATTRIBUTEs
+            # e.g., "Caroline and Melanie are friends" references both person attributes
+            if new_obj.type == ObjectType.RELATIONSHIP:
+                for existing_obj, sim in zip(existing_with_embeddings, similarities):
+                    if existing_obj.type == ObjectType.PERSON_ATTRIBUTE:
+                        existing_keywords = get_keywords(existing_obj.content)
+                        overlap = (
+                            not new_keywords.isdisjoint(existing_keywords)
+                            if (new_keywords and existing_keywords)
+                            else False
+                        )
+                        if overlap or sim >= reference_threshold:
+                            self.link(new_obj.id, existing_obj.id, "references")
+
+            # Rule 7: DECISIONs can be caused by EVENTs (temporal heuristic)
+            # e.g., "Decided to pursue counseling" caused_by "Attended support group"
+            if enable_temporal_heuristic and new_obj.type == ObjectType.DECISION:
+                for existing_obj in existing:
+                    if (
+                        existing_obj.type == ObjectType.EVENT
+                        and existing_obj.turn_id >= new_obj.turn_id - 10
+                        and existing_obj.turn_id < new_obj.turn_id
+                    ):
+                        # Check keyword overlap
+                        existing_keywords = get_keywords(existing_obj.content)
+                        if existing_keywords and new_keywords:
+                            if not new_keywords.isdisjoint(existing_keywords):
+                                self.link(new_obj.id, existing_obj.id, "caused_by")
 
     # =========================================================================
     # Mock Helpers (for testing)

@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 import time
 
+from experiments.llm_utils import call_llm_with_retry
+
 
 @dataclass
 class MethodResult:
@@ -157,18 +159,18 @@ If you cannot find the answer in the context, say "I don't have enough informati
 Provide a concise, direct answer based only on the information in the context above."""
 
     def _call_llm(self, prompt: str) -> str:
-        """Call the LLM to generate a response."""
+        """Call the LLM to generate a response with exponential backoff retry."""
         if hasattr(self.llm_client, 'chat'):
-            # OpenAI-style client
-            response = self.llm_client.chat.completions.create(
+            # OpenAI-style client with retry
+            return call_llm_with_retry(
+                client=self.llm_client,
                 model=self.config.get("model", "gpt-4o-mini"),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         elif hasattr(self.llm_client, 'messages'):
-            # Anthropic-style client
+            # Anthropic-style client (no retry wrapper yet - keep original)
             response = self.llm_client.messages.create(
                 model=self.config.get("model", "claude-3-5-haiku-latest"),
                 max_tokens=200,

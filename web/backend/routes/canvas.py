@@ -27,14 +27,15 @@ def get_canvas(session_id: str = "default") -> Canvas:
     """Get or create a canvas instance for the session."""
     if session_id not in _canvas_instances:
         # Read env vars at runtime (after load_dotenv in main.py)
-        extractor_model = os.environ.get("MODEL_WEAK_2", "gpt-4o-mini")
+        extractor_model = os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
         embedding_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 
         _canvas_instances[session_id] = Canvas(
-            extractor_model=extractor_model,
-            embedding_model=embedding_model
+            extractor_model=extractor_model, embedding_model=embedding_model
         )
-        print(f"Created canvas with extractor={extractor_model}, embedding={embedding_model}")
+        print(
+            f"Created canvas with extractor={extractor_model}, embedding={embedding_model}"
+        )
     return _canvas_instances[session_id]
 
 
@@ -88,9 +89,7 @@ async def get_graph(session_id: str = "default"):
     for obj in objects:
         # References relationships
         for ref_id in obj.references:
-            links.append(
-                GraphLink(source=obj.id, target=ref_id, relation="references")
-            )
+            links.append(GraphLink(source=obj.id, target=ref_id, relation="references"))
 
         # Causal relationships (leads_to)
         for target_id in obj.leads_to:
@@ -121,7 +120,7 @@ async def retrieve_objects(request: RetrieveRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid object type: {request.obj_type}. "
-                f"Valid types: {[t.value for t in ObjectType]}"
+                f"Valid types: {[t.value for t in ObjectType]}",
             )
 
     # Retrieve objects
@@ -134,7 +133,9 @@ async def retrieve_objects(request: RetrieveRequest):
     )
 
     return RetrieveResponse(
-        objects=[CanvasObjectResponse.from_canvas_object(obj) for obj in result.objects],
+        objects=[
+            CanvasObjectResponse.from_canvas_object(obj) for obj in result.objects
+        ],
         scores=result.scores,
         query=result.query,
         retrieval_time=result.retrieval_time,

@@ -528,7 +528,7 @@ def main():
         choices=[
             "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-cot-v2",
             "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
-            "native", "summarization", "rag", "memgpt-lite", "graphrag-lite"
+            "native", "summarization", "rag", "memgpt-lite", "graphrag-lite", "graphrag"
         ],
         default="cogcanvas",
         help="Agent to evaluate",
@@ -674,6 +674,11 @@ def main():
         from experiments.agents.graphrag_lite_agent import GraphRAGLiteAgent
         agent = GraphRAGLiteAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: GraphRAGLiteAgent(retain_recent=args.retain_recent)
+    elif args.agent == "graphrag":
+        from experiments.agents.graphrag_agent import create_graphrag_agent
+        # For multihop, we typically use local search
+        agent = create_graphrag_agent(search_method="local")
+        agent_factory = lambda: create_graphrag_agent(search_method="local")
     else:
         raise NotImplementedError(f"Agent '{args.agent}' not implemented")
 

@@ -18,11 +18,16 @@ from matplotlib.lines import Line2D
 
 # Color scheme for different node types (academic/professional style)
 NODE_COLORS = {
+    # Original 5 types (task-oriented)
     "decision": "#E74C3C",      # Red - important decisions
     "todo": "#3498DB",          # Blue - action items
     "key_fact": "#27AE60",      # Green - factual information
     "insight": "#9B59B6",       # Purple - derived insights
     "reminder": "#F39C12",      # Orange - reminders/preferences
+    # Extended 3 types (social/personal conversations - LoCoMo)
+    "person_attribute": "#1ABC9C",  # Teal - personal traits, status
+    "event": "#E67E22",             # Dark Orange - activities with time
+    "relationship": "#95A5A6",      # Gray - interpersonal connections
 }
 
 # Edge colors for different relationship types

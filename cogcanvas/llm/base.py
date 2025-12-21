@@ -14,6 +14,9 @@ class LLMBackend(ABC):
         user_message: str,
         assistant_message: str,
         existing_objects: Optional[List[CanvasObject]] = None,
+        turn_id: int = 0,
+        enable_temporal_fallback: bool = True,
+        session_datetime: Optional[str] = None,
     ) -> List[CanvasObject]:
         """
         Extract canvas objects from a dialogue turn.
@@ -22,6 +25,10 @@ class LLMBackend(ABC):
             user_message: The user's message
             assistant_message: The assistant's response
             existing_objects: Existing objects for context (optional)
+            turn_id: Current conversation turn (for temporal artifacts)
+            enable_temporal_fallback: Use regex to catch dates LLM might miss
+            session_datetime: Session timestamp for relative time resolution
+                             (e.g., "1:56 pm on 8 May, 2023")
 
         Returns:
             List of extracted CanvasObjects
@@ -53,6 +60,9 @@ class MockLLMBackend(LLMBackend):
         user_message: str,
         assistant_message: str,
         existing_objects: Optional[List[CanvasObject]] = None,
+        turn_id: int = 0,
+        enable_temporal_fallback: bool = True,
+        session_datetime: Optional[str] = None,
     ) -> List[CanvasObject]:
         """
         Rule-based mock extraction for testing.
@@ -61,8 +71,11 @@ class MockLLMBackend(LLMBackend):
         - DECISION: "recommend", "suggest", "go with", "use"
         - KEY_FACT: "rate limit", "deadline", "budget", numbers
         - REMINDER: "prefer", "should", "style", "strategy"
+        - PERSON_ATTRIBUTE: personal traits, status, identity
+        - EVENT: activities with time context
+        - RELATIONSHIP: interpersonal connections
         """
-        self._turn_counter += 1
+        self._turn_counter = turn_id if turn_id > 0 else self._turn_counter + 1
         objects = []
         combined = f"{user_message} {assistant_message}".lower()
         assistant_lower = assistant_message.lower()
@@ -106,6 +119,49 @@ class MockLLMBackend(LLMBackend):
                     quote=assistant_message,
                     turn_id=self._turn_counter,
                     source="assistant",
+                )
+            )
+
+        # PERSON_ATTRIBUTE detection (for social conversations)
+        person_triggers = ["is a", "is married", "is single", "works as", "lives in", "moved from", "transgender", "years old"]
+        if any(trigger in combined for trigger in person_triggers):
+            objects.append(
+                CanvasObject(
+                    type=ObjectType.PERSON_ATTRIBUTE,
+                    content=user_message[:200] if user_message else assistant_message[:200],
+                    context=f"Person attribute from turn {self._turn_counter}",
+                    quote=user_message if user_message else assistant_message,
+                    turn_id=self._turn_counter,
+                    source="user",
+                )
+            )
+
+        # EVENT detection (activities with time)
+        event_triggers = ["went to", "attended", "visited", "planning to", "will go", "last week", "yesterday", "tomorrow"]
+        if any(trigger in combined for trigger in event_triggers):
+            objects.append(
+                CanvasObject(
+                    type=ObjectType.EVENT,
+                    content=user_message[:200] if user_message else assistant_message[:200],
+                    context=f"Event from turn {self._turn_counter}",
+                    quote=user_message if user_message else assistant_message,
+                    turn_id=self._turn_counter,
+                    source="user",
+                    session_datetime=session_datetime,
+                )
+            )
+
+        # RELATIONSHIP detection (interpersonal connections)
+        relationship_triggers = ["friend", "friends", "family", "brother", "sister", "mother", "father", "colleague", "known each other"]
+        if any(trigger in combined for trigger in relationship_triggers):
+            objects.append(
+                CanvasObject(
+                    type=ObjectType.RELATIONSHIP,
+                    content=user_message[:200] if user_message else assistant_message[:200],
+                    context=f"Relationship from turn {self._turn_counter}",
+                    quote=user_message if user_message else assistant_message,
+                    turn_id=self._turn_counter,
+                    source="user",
                 )
             )
 

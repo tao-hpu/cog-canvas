@@ -116,6 +116,8 @@ class APIEmbeddingBackend(EmbeddingBackend):
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for batch of texts via API."""
         import requests
+        import time
+        import random
 
         all_embeddings = []
 
@@ -123,43 +125,80 @@ class APIEmbeddingBackend(EmbeddingBackend):
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i:i + self.batch_size]
 
-            try:
-                response = requests.post(
-                    f"{self.api_base}/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "input": batch,
-                        "model": self.model,
-                    },
-                    timeout=60,
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                # Extract embeddings in order
-                batch_embeddings = sorted(data["data"], key=lambda x: x["index"])
-                all_embeddings.extend([item["embedding"] for item in batch_embeddings])
-
-                # Cache dimension
-                if self._dimension is None and all_embeddings:
-                    self._dimension = len(all_embeddings[0])
-
-            except requests.exceptions.HTTPError as e:
-                # Log response body for debugging
-                print(f"API embedding error: {e}")
-                if hasattr(e, 'response') and e.response is not None:
-                    print(f"Response body: {e.response.text}")
-                # Return zero vectors as fallback
+            # Filter out empty strings to avoid 400 errors
+            batch = [text for text in batch if text.strip()]
+            if not batch:
+                # If all texts are empty, return zero vectors
                 dim = self._dimension or 1024
-                all_embeddings.extend([[0.0] * dim for _ in batch])
-            except Exception as e:
-                print(f"API embedding error: {e}")
-                # Return zero vectors as fallback
-                dim = self._dimension or 1024
-                all_embeddings.extend([[0.0] * dim for _ in batch])
+                all_embeddings.extend([[0.0] * dim for _ in range(len(texts[i:i + self.batch_size]))])
+                continue
+
+            # Retry logic with exponential backoff
+            max_retries = 3
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        f"{self.api_base}/embeddings",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "input": batch,
+                            "model": self.model,
+                        },
+                        timeout=60,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Extract embeddings in order
+                    batch_embeddings = sorted(data["data"], key=lambda x: x["index"])
+                    all_embeddings.extend([item["embedding"] for item in batch_embeddings])
+
+                    # Cache dimension
+                    if self._dimension is None and all_embeddings:
+                        self._dimension = len(all_embeddings[0])
+
+                    break  # Success, exit retry loop
+
+                except requests.exceptions.HTTPError as e:
+                    status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else None
+
+                    # Don't retry on 400 errors (bad request)
+                    if status_code == 400:
+                        print(f"API embedding error (400 - bad request): {e}")
+                        if hasattr(e, 'response') and e.response is not None:
+                            print(f"Response body: {e.response.text}")
+                        # Return zero vectors as fallback
+                        dim = self._dimension or 1024
+                        all_embeddings.extend([[0.0] * dim for _ in batch])
+                        break
+
+                    # Retry on 5xx and 429 errors
+                    if status_code in (429, 500, 502, 503, 504):
+                        if attempt < max_retries:
+                            delay = (2 ** attempt) * (1 + random.random() * 0.25)
+                            print(f"API embedding error ({status_code}): {e}. Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})...")
+                            time.sleep(delay)
+                            continue
+
+                    # Last attempt or non-retryable error
+                    print(f"API embedding error: {e}")
+                    if hasattr(e, 'response') and e.response is not None:
+                        print(f"Response body: {e.response.text}")
+                    # Return zero vectors as fallback
+                    dim = self._dimension or 1024
+                    all_embeddings.extend([[0.0] * dim for _ in batch])
+                    break
+
+                except Exception as e:
+                    # Don't retry on unexpected errors
+                    print(f"API embedding error: {e}")
+                    # Return zero vectors as fallback
+                    dim = self._dimension or 1024
+                    all_embeddings.extend([[0.0] * dim for _ in batch])
+                    break
 
         return all_embeddings
 

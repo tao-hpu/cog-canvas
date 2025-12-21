@@ -12,42 +12,63 @@ EXTRACTION_PROMPT = """You are an expert at extracting structured cognitive obje
 
 Given a conversation turn (user message + assistant response), extract any of these object types:
 
-1. **decision**: A choice or decision made (e.g., "Let's use PostgreSQL", "We'll go with approach B")
-2. **todo**: Action items, tasks to do (e.g., "Need to implement auth", "Should add tests")
-3. **key_fact**: Important facts, numbers, names, constraints (e.g., "Budget is $50k", "API rate limit is 100/min")
-4. **reminder**: User preferences, rules, constraints to remember (e.g., "User prefers TypeScript", "No external dependencies")
-5. **insight**: Conclusions, learnings, realizations (e.g., "The bottleneck is in the database", "This approach won't scale")
+**Task-oriented types:**
+1. **decision**: A choice or decision made (e.g., "Let's use PostgreSQL", "I decided to pursue counseling")
+2. **todo**: Action items, tasks to do (e.g., "Need to implement auth", "Planning to go camping next month")
+3. **key_fact**: Important facts, numbers, constraints (e.g., "Budget is $50k", "The event is in June 2023")
+4. **reminder**: Preferences, rules to remember (e.g., "User prefers TypeScript", "Always meditate in morning")
+5. **insight**: Conclusions, learnings (e.g., "The bottleneck is in the database", "Exercise helps my anxiety")
 
-Rules:
-- Only extract objects that are explicitly stated or clearly implied
-- Each object should be self-contained and understandable without the original context
-- **CRITICAL**: You MUST include a "citation" field with the EXACT quote from the original dialogue that supports this extraction
-- The citation must be a verbatim substring from either the user or assistant message
-- Be conservative: only extract genuinely important information
-- Skip trivial or obvious statements
-- **Time Extraction**: If the fact mentions a time (explicit like "May 7, 2023" or relative like "yesterday", "last week", "next month"), extract it VERBATIM in the "time_expression" field. Leave empty if no time is mentioned.
+**Personal/Social types (IMPORTANT for conversations about people):**
+6. **person_attribute**: Personal traits, identity, status (e.g., "Caroline is a transgender woman", "Melanie is married with two kids", "John is single", "She moved from Sweden 4 years ago")
+7. **event**: Activities or occurrences WITH time (e.g., "Attended LGBTQ support group on 7 May 2023", "Ran a charity race last Sunday", "Painting a sunrise in 2022")
+8. **relationship**: Interpersonal connections (e.g., "Caroline and Melanie are close friends", "Known each other for 4 years")
 
-Output JSON array (can be empty if nothing worth extracting):
+**EXTRACTION RULES:**
+- Extract ALL factual information about people (identity, status, activities, preferences)
+- Extract ALL events with their time expressions
+- Extract ALL relationships mentioned
+- Each object should be self-contained and understandable without context
+- **CRITICAL**: Include "citation" field with EXACT quote from dialogue
+- Do NOT skip personal information - it is important!
+
+**CRITICAL TEMPORAL RULES:**
+- Preserve dates EXACTLY as written: "7 May 2023", "June 2023", "the sunday before 25 May 2023"
+- DO NOT convert specific dates to relative expressions
+- Include dates in both "content" and "time_expression" fields
+
+Output JSON array:
 [
   {
-    "type": "decision|todo|key_fact|reminder|insight",
-    "content": "The extracted information in a clear, standalone statement",
-    "citation": "EXACT verbatim quote from the dialogue that supports this extraction",
-    "context": "Brief explanation of why this was extracted",
+    "type": "decision|todo|key_fact|reminder|insight|person_attribute|event|relationship",
+    "content": "The extracted information INCLUDING exact dates if mentioned",
+    "citation": "EXACT verbatim quote from dialogue",
+    "context": "Brief explanation of why extracted",
     "confidence": 0.0-1.0,
-    "time_expression": "VERBATIM time expression if mentioned (e.g., 'yesterday', 'May 7, 2023', 'next week'), or empty string if no time"
+    "time_expression": "VERBATIM time expression or empty string"
   }
 ]
 
-Example:
-User: "Let's use PostgreSQL, it's better for our budget of $50k. I'll schedule the migration for next week."
-Assistant: "Good choice!"
+**Example 1 (Social conversation):**
+User: "Caroline is a transgender woman who moved from Sweden 4 years ago. She went to the LGBTQ support group on 7 May 2023."
+Assistant: "That's wonderful that she found a supportive community!"
 
 Output:
 [
-  {"type": "decision", "content": "Use PostgreSQL as the database", "citation": "Let's use PostgreSQL", "context": "User made database decision", "confidence": 0.95, "time_expression": ""},
-  {"type": "key_fact", "content": "Budget is $50,000", "citation": "budget of $50k", "context": "Budget constraint mentioned", "confidence": 0.9, "time_expression": ""},
-  {"type": "todo", "content": "Schedule database migration", "citation": "I'll schedule the migration for next week", "context": "Migration task with timing", "confidence": 0.9, "time_expression": "next week"}
+  {"type": "person_attribute", "content": "Caroline is a transgender woman", "citation": "Caroline is a transgender woman", "context": "Identity information", "confidence": 0.95, "time_expression": ""},
+  {"type": "person_attribute", "content": "Caroline moved from Sweden 4 years ago", "citation": "moved from Sweden 4 years ago", "context": "Background information", "confidence": 0.9, "time_expression": "4 years ago"},
+  {"type": "event", "content": "Caroline attended LGBTQ support group on 7 May 2023", "citation": "went to the LGBTQ support group on 7 May 2023", "context": "Activity with specific date", "confidence": 0.95, "time_expression": "7 May 2023"}
+]
+
+**Example 2 (Mixed conversation):**
+User: "Melanie is married with two kids. She's planning to go camping in June 2023. We've been friends for 4 years."
+Assistant: "Sounds like a fun family trip!"
+
+Output:
+[
+  {"type": "person_attribute", "content": "Melanie is married with two kids", "citation": "Melanie is married with two kids", "context": "Family status", "confidence": 0.95, "time_expression": ""},
+  {"type": "event", "content": "Melanie planning camping trip in June 2023", "citation": "planning to go camping in June 2023", "context": "Future activity with date", "confidence": 0.9, "time_expression": "June 2023"},
+  {"type": "relationship", "content": "User and Melanie have been friends for 4 years", "citation": "We've been friends for 4 years", "context": "Friendship duration", "confidence": 0.9, "time_expression": "4 years"}
 ]"""
 
 
@@ -91,14 +112,21 @@ class OpenAIBackend(LLMBackend):
         user_message: str,
         assistant_message: str,
         existing_objects: Optional[List[CanvasObject]] = None,
+        turn_id: int = 0,
+        enable_temporal_fallback: bool = True,
+        session_datetime: Optional[str] = None,
     ) -> List[CanvasObject]:
         """
-        Extract canvas objects using LLM.
+        Extract canvas objects using LLM with optional temporal enhancement.
 
         Args:
             user_message: The user's message
             assistant_message: The assistant's response
             existing_objects: Existing objects for deduplication context
+            turn_id: Current conversation turn (for temporal artifacts)
+            enable_temporal_fallback: Use regex to catch dates LLM might miss
+            session_datetime: Session timestamp for relative time resolution
+                             (e.g., "1:56 pm on 8 May, 2023")
 
         Returns:
             List of extracted CanvasObjects
@@ -115,6 +143,7 @@ class OpenAIBackend(LLMBackend):
             )
             context_hint = f"\n\nAlready extracted (avoid duplicates):\n{existing_summary}"
 
+        llm_objects = []
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -127,12 +156,31 @@ class OpenAIBackend(LLMBackend):
             )
 
             raw_response = response.choices[0].message.content.strip()
-            return self._parse_extraction_response(raw_response)
+            llm_objects = self._parse_extraction_response(raw_response)
+
+            # Set turn_id and session_datetime for all objects
+            for obj in llm_objects:
+                obj.turn_id = turn_id
+                obj.session_datetime = session_datetime
 
         except Exception as e:
-            # Log error but don't crash - return empty list
+            # Log error but don't crash - continue with temporal fallback
             print(f"Extraction error: {e}")
-            return []
+
+        # Temporal fallback: use regex to catch dates LLM might have missed
+        # Also resolves relative times to absolute when session_datetime is provided
+        if enable_temporal_fallback:
+            try:
+                from cogcanvas.temporal import extract_and_merge_temporal
+                full_text = f"{user_message}\n{assistant_message}"
+                llm_objects = extract_and_merge_temporal(
+                    full_text, llm_objects, turn_id, source="user",
+                    session_datetime=session_datetime
+                )
+            except ImportError:
+                pass  # Temporal module not available, skip fallback
+
+        return llm_objects
 
     def _parse_extraction_response(self, raw_response: str) -> List[CanvasObject]:
         """Parse LLM response into CanvasObjects."""

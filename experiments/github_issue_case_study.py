@@ -22,11 +22,12 @@ sys.path.insert(0, str(project_root))
 
 # Load .env file
 from dotenv import load_dotenv
+
 load_dotenv(project_root / ".env")
 
 # Set OpenAI-compatible API configuration
-os.environ['OPENAI_API_KEY'] = os.getenv('API_KEY', '')
-os.environ['OPENAI_API_BASE'] = os.getenv('API_BASE', '')
+os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY", "")
+os.environ["OPENAI_API_BASE"] = os.getenv("API_BASE", "")
 
 from cogcanvas import Canvas, ObjectType
 from cogcanvas.llm import get_backend
@@ -66,9 +67,8 @@ NextAdapter {
 }
 
 Target: Alpha in Next.js 16 this summer.""",
-        "assistant": "This RFC proposes a standardized deployment adapter API for Next.js. Key decisions: 1) Vercel uses same adapter API as partners (parity), 2) New handler signatures for Node.js and Edge, 3) waitUntil for background tasks, 4) Target alpha in Next.js 16."
+        "assistant": "This RFC proposes a standardized deployment adapter API for Next.js. Key decisions: 1) Vercel uses same adapter API as partners (parity), 2) New handler signatures for Node.js and Edge, 3) waitUntil for background tasks, 4) Target alpha in Next.js 16.",
     },
-
     # Turn 2: @mhart asking about deprecation
     {
         "user": """@mhart: Can you clarify what happens to minimalMode?
@@ -76,17 +76,15 @@ Also, what about Vercel-specific features like x-matched-path and x-now-route-ma
 Will these become documented or refactored as generic capabilities?""",
         "assistant": """@ijjk (Vercel): minimalMode effectively goes away with the refactored handler interfaces.
 The new approach allows independent entry invocation without loading the full server.
-Decision: minimalMode will be deprecated in favor of new handler architecture."""
+Decision: minimalMode will be deprecated in favor of new handler architecture.""",
     },
-
     # Turn 3: @ascorbic questioning routing
     {
         "user": """@ascorbic: If there are separate entrypoints, does this mean adapters need to implement custom routing logic?
 The routing rules have historically been very lightly documented, causing lots of reverse-engineering overhead.
 This is a critical concern for platform providers like Netlify.""",
-        "assistant": "This raises an important open question: Will adapters need to implement full end-to-end routing? This has historically been the biggest barrier for platform providers. TODO: Document routing behavior specification."
+        "assistant": "This raises an important open question: Will adapters need to implement full end-to-end routing? This has historically been the biggest barrier for platform providers. TODO: Document routing behavior specification.",
     },
-
     # Turn 4: @lucacasonato from Deno
     {
         "user": """@lucacasonato (Deno Deploy): I'd prefer a singular entrypoint over multiple ones.
@@ -94,9 +92,8 @@ Also interested in CDN cache integration hooks - currently these are flagged by 
 Deno's serverless architecture would benefit from a unified entry.""",
         "assistant": """@ijjk: next-server remains for routing resolution before invoking the correct entrypoint.
 This enables more optimized deployments while keeping routing logic centralized.
-Key fact: Routing will still be handled by next-server, adapters invoke specific entrypoints."""
+Key fact: Routing will still be handled by next-server, adapters invoke specific entrypoints.""",
     },
-
     # Turn 5: Community questions about OpenNext
     {
         "user": """@nilsingwersen:
@@ -107,17 +104,15 @@ Key fact: Routing will still be handled by next-server, adapters invoke specific
 - Decision: Vercel will dogfood via their own adapter
 - Key fact: OpenNext implementations must be rewritten for the new API
 - Image providers are configurable via existing next.config images API
-This confirms the adapter approach will be used internally at Vercel too."""
+This confirms the adapter approach will be used internally at Vercel too.""",
     },
-
     # Turn 6: PPR discussion - critical gap
     {
         "user": """@RaeesBhatti (Tilda.net): Partial Prerendering (PPR) is a critical missing feature for non-Vercel platforms.
 I propose a Progressive Rendering Format standard for CDN-friendly PPR implementation.
 Currently only Vercel can properly leverage PPR. This creates platform lock-in.""",
-        "assistant": "Key insight: PPR parity across platforms is identified as a critical gap. Currently only Vercel supports PPR properly. TODO: Address PPR for non-Vercel platforms to prevent platform lock-in."
+        "assistant": "Key insight: PPR parity across platforms is identified as a critical gap. Currently only Vercel supports PPR properly. TODO: Address PPR for non-Vercel platforms to prevent platform lock-in.",
     },
-
     # Turn 7: Comprehensive Netlify feedback
     {
         "user": """@serhalp (Netlify, Jul 25): Comprehensive feedback on gaps:
@@ -135,9 +130,8 @@ TODO: Specify pathname format (consider URLPattern standard)
 TODO: Document routing behavior specification
 TODO: Clarify fallbackID handling
 TODO: Clarify IMAGE type pathname mapping
-Key concern: Routing complexity remains the biggest barrier for platform providers."""
+Key concern: Routing complexity remains the biggest barrier for platform providers.""",
     },
-
     # Turn 8: Vercel response to Netlify
     {
         "user": "What is Vercel's detailed response to these routing and documentation concerns?",
@@ -150,17 +144,15 @@ Key concern: Routing complexity remains the biggest barrier for platform provide
 - Decision: Node.js signature kept matching IncomingMessage/ServerResponse for compatibility
 - Decision: Considering @next-community/adapter-* namespace for community adapters
 - Key fact: Undocumented private APIs will be removed with documented alternatives and lead time
-- Key fact: Assets include all filesystem reads; tracing bugs will be fixed"""
+- Key fact: Assets include all filesystem reads; tracing bugs will be fixed""",
     },
-
     # Turn 9: Beta docs announcement
     {
         "user": """@threepointone (Oct 11): Beta documentation is now available at:
 https://nextjs.org/docs/beta/app/api-reference/config/next-config-js/adapterPath
 This marks a significant milestone.""",
-        "assistant": "Key fact: Beta documentation published at nextjs.org/docs/beta. This marks progress toward the alpha release in Next.js 16."
+        "assistant": "Key fact: Beta documentation published at nextjs.org/docs/beta. This marks progress toward the alpha release in Next.js 16.",
     },
-
     # Turn 10: Additional community feedback
     {
         "user": """Community requests summary:
@@ -173,9 +165,8 @@ TODO: Add adapter-level HTTP header customization capability
 TODO: Allow customizable image optimization caching locations
 TODO: Improve Docker/environment variable friendliness
 TODO: Consider optional lifecycle hooks (onPreBuild, onPostOutput)
-These represent community priorities for the adapter API."""
+These represent community priorities for the adapter API.""",
     },
-
     # Turn 11: Status update
     {
         "user": "What is the current status of this RFC as of late 2025?",
@@ -190,8 +181,8 @@ Key facts:
 Remaining TODOs:
 - Complete routing specification documentation
 - Finalize PPR support for non-Vercel platforms
-- Ship official adapters for major platforms"""
-    }
+- Ship official adapters for major platforms""",
+    },
 ]
 
 
@@ -203,18 +194,20 @@ def run_case_study():
     print("=" * 80)
     print(f"\nSource: https://github.com/vercel/next.js/discussions/77740")
     print(f"Discussion Size: 68 responses from multiple stakeholders")
-    print(f"Stakeholders: Vercel, Netlify, Deno Deploy, Cloudflare, Tilda.net, Community")
+    print(
+        f"Stakeholders: Vercel, Netlify, Deno Deploy, Cloudflare, Tilda.net, Community"
+    )
     print()
 
     # Check API configuration
-    api_key = os.environ.get('OPENAI_API_KEY', '')
-    api_base = os.environ.get('OPENAI_API_BASE', '')
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    api_base = os.environ.get("OPENAI_API_BASE", "")
     print(f"API Base: {api_base}")
     print(f"API Key: {'*' * 20}...{api_key[-8:] if len(api_key) > 8 else 'NOT SET'}")
 
     # Initialize Canvas with OpenAI backend
     # Use gpt-4o-mini for cost efficiency
-    model = os.getenv('MODEL_WEAK_2', 'gpt-4o-mini')  # Use weak model for extraction
+    model = os.getenv("MODEL_DEFAULT", "gpt-4o-mini")  # Use weak model for extraction
     print(f"Extraction Model: {model}")
     print()
 
@@ -251,7 +244,7 @@ def run_case_study():
     print(f"\nTotal Objects Extracted: {stats['total_objects']}")
     print(f"Conversation Turns: {stats['turn_count']}")
     print(f"\nObjects by Type:")
-    for obj_type, count in stats['by_type'].items():
+    for obj_type, count in stats["by_type"].items():
         print(f"  {obj_type.upper():12}: {count}")
 
     # Demonstrate retrieval capabilities
@@ -267,11 +260,13 @@ def run_case_study():
     ]
 
     for query in queries:
-        print(f"\nQuery: \"{query}\"")
+        print(f'\nQuery: "{query}"')
         result = canvas.retrieve(query, top_k=3)
         print(f"  Found {result.count} relevant objects:")
         for obj, score in zip(result.objects, result.scores):
-            print(f"    [{obj.type.value.upper():10}] (score: {score:.2f}) {obj.content[:60]}...")
+            print(
+                f"    [{obj.type.value.upper():10}] (score: {score:.2f}) {obj.content[:60]}..."
+            )
 
     # List all objects by type
     print("\n" + "-" * 80)
@@ -287,7 +282,11 @@ def run_case_study():
             for i, obj in enumerate(objects, 1):
                 print(f"\n  {i}. {obj.content}")
                 if obj.context:
-                    ctx = obj.context[:100] + "..." if len(obj.context) > 100 else obj.context
+                    ctx = (
+                        obj.context[:100] + "..."
+                        if len(obj.context) > 100
+                        else obj.context
+                    )
                     print(f"     Context: {ctx}")
 
     # Show graph relationships
@@ -319,7 +318,7 @@ def run_case_study():
     query = "What are the key decisions and remaining TODOs for the deployment adapter?"
     result = canvas.retrieve(query, top_k=5)
     injected = canvas.inject(result, format="markdown")
-    print(f"\nQuery: \"{query}\"")
+    print(f'\nQuery: "{query}"')
     print(f"\nInjected Context for LLM:")
     print(injected)
 
@@ -327,7 +326,8 @@ def run_case_study():
     print("\n" + "=" * 80)
     print("CASE STUDY SUMMARY")
     print("=" * 80)
-    print(f"""
+    print(
+        f"""
 INPUT:
   - 68 discussion responses
   - Multiple stakeholders (Vercel, Netlify, Deno, Cloudflare, etc.)
@@ -347,7 +347,8 @@ KEY VALUE DEMONSTRATED:
   2. Enable semantic search across all extracted knowledge
   3. Generate relevant context for follow-up questions
   4. Build a knowledge graph of relationships between artifacts
-""")
+"""
+    )
 
     # Prepare export data
     export_data = {
@@ -355,33 +356,39 @@ KEY VALUE DEMONSTRATED:
             "source": "https://github.com/vercel/next.js/discussions/77740",
             "title": "RFC: Deployment Adapters API",
             "discussion_size": 68,
-            "stakeholders": ["Vercel", "Netlify", "Deno Deploy", "Cloudflare", "Tilda.net", "Community"],
+            "stakeholders": [
+                "Vercel",
+                "Netlify",
+                "Deno Deploy",
+                "Cloudflare",
+                "Tilda.net",
+                "Community",
+            ],
             "extraction_model": model,
             "timestamp": datetime.now().isoformat(),
         },
         "statistics": stats,
         "objects": [],
-        "graph": {
-            "nodes": [],
-            "edges": []
-        }
+        "graph": {"nodes": [], "edges": []},
     }
 
     # Export all objects
     for obj in canvas.list_objects():
-        export_data["objects"].append({
-            "id": obj.id,
-            "type": obj.type.value,
-            "content": obj.content,
-            "context": obj.context,
-            "quote": obj.quote,
-            "turn_id": obj.turn_id,
-            "source": obj.source,
-            "confidence": obj.confidence,
-        })
+        export_data["objects"].append(
+            {
+                "id": obj.id,
+                "type": obj.type.value,
+                "content": obj.content,
+                "context": obj.context,
+                "quote": obj.quote,
+                "turn_id": obj.turn_id,
+                "source": obj.source,
+                "confidence": obj.confidence,
+            }
+        )
 
     # Export graph structure using the built-in to_dict method
-    if hasattr(canvas, '_graph') and canvas._graph:
+    if hasattr(canvas, "_graph") and canvas._graph:
         graph_data = canvas._graph.to_dict()
         export_data["graph"]["nodes"] = graph_data.get("nodes", [])
         export_data["graph"]["edges"] = graph_data.get("edges", {})
@@ -394,7 +401,8 @@ def main():
         description="Run CogCanvas case study on GitHub Discussion"
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default="experiments/results/case_study_nextjs.json",
         help="Output file path",
     )
@@ -406,7 +414,7 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        help="Override extraction model (default: from .env MODEL_WEAK_2)",
+        help="Override extraction model (default: from .env MODEL_DEFAULT)",
     )
 
     args = parser.parse_args()

@@ -14,6 +14,7 @@ import os
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
+from experiments.llm_utils import call_llm_with_retry
 
 
 class NativeAgent(Agent):
@@ -38,17 +39,18 @@ class NativeAgent(Agent):
         Initialize NativeAgent.
 
         Args:
-            model: Model name for answer generation (None = load from env MODEL_WEAK_2)
+            model: Model name for answer generation (None = load from env MODEL_DEFAULT)
             retain_recent: Number of recent turns to keep (for reference, actual
                           truncation is controlled by runner's on_compression)
         """
         from dotenv import load_dotenv
+
         load_dotenv()
 
         self.retain_recent = retain_recent
 
-        # Use MODEL_WEAK_2 by default (same as CogCanvas for fair comparison)
-        self.model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
+        # Use MODEL_DEFAULT by default (same as CogCanvas for fair comparison)
+        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
 
         # Initialize LLM client
         self._client = None
@@ -171,12 +173,12 @@ Provide a concise, direct answer based only on the information above."""
             return "I don't have enough information to answer this question."
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"Error generating answer: {e}"

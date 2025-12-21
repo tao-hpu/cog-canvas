@@ -25,12 +25,18 @@ from dataclasses import dataclass
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
-from cogcanvas.embeddings import APIEmbeddingBackend, MockEmbeddingBackend, batch_cosine_similarity
+from experiments.llm_utils import call_llm_with_retry
+from cogcanvas.embeddings import (
+    APIEmbeddingBackend,
+    MockEmbeddingBackend,
+    batch_cosine_similarity,
+)
 
 
 @dataclass
 class ArchivalEntry:
     """An entry in archival memory with embedding."""
+
     turn_id: int
     user: str
     assistant: str
@@ -62,7 +68,7 @@ class MemGPTLiteAgent(Agent):
         model: str = None,
         embedding_model: str = None,
         core_memory_size: int = 5,  # Recent turns to keep in full
-        archival_top_k: int = 3,  # How many archival entries to retrieve
+        archival_top_k: int = 10,  # How many archival entries to retrieve
         use_keyword_search: bool = True,  # Enable recall memory
     ):
         """
@@ -76,6 +82,7 @@ class MemGPTLiteAgent(Agent):
             use_keyword_search: Whether to use keyword-based recall memory
         """
         from dotenv import load_dotenv
+
         load_dotenv()
 
         self.core_memory_size = core_memory_size
@@ -83,8 +90,10 @@ class MemGPTLiteAgent(Agent):
         self.use_keyword_search = use_keyword_search
 
         # Models
-        self.model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
-        embed_model_name = embedding_model or os.getenv("EMBEDDING_MODEL", "bge-large-zh-v1.5")
+        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        embed_model_name = embedding_model or os.getenv(
+            "EMBEDDING_MODEL", "bge-large-zh-v1.5"
+        )
 
         # Initialize LLM client
         self._client = None
@@ -92,13 +101,21 @@ class MemGPTLiteAgent(Agent):
 
         # Initialize Embedding backend
         try:
-            embed_api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            embed_api_base = os.getenv("EMBEDDING_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            embed_api_key = (
+                os.getenv("EMBEDDING_API_KEY")
+                or os.getenv("API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+            )
+            embed_api_base = (
+                os.getenv("EMBEDDING_API_BASE")
+                or os.getenv("API_BASE")
+                or os.getenv("OPENAI_API_BASE")
+            )
             if embed_api_key:
                 self.embedder = APIEmbeddingBackend(
                     model=embed_model_name,
                     api_key=embed_api_key,
-                    api_base=embed_api_base
+                    api_base=embed_api_base,
                 )
             else:
                 print("Warning: EMBEDDING_API_KEY not set, using mock embeddings")
@@ -111,12 +128,15 @@ class MemGPTLiteAgent(Agent):
         self._history: List[ConversationTurn] = []
         self._core_memory: List[ConversationTurn] = []  # Recent turns (full)
         self._archival_memory: List[ArchivalEntry] = []  # Older turns (embedded)
-        self._keyword_index: Dict[str, List[int]] = {}  # keyword -> list of archival indices
+        self._keyword_index: Dict[str, List[int]] = (
+            {}
+        )  # keyword -> list of archival indices
 
     def _init_client(self):
         """Initialize LLM client."""
         try:
             from openai import OpenAI
+
             api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
             api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
@@ -146,10 +166,7 @@ class MemGPTLiteAgent(Agent):
         Handle compression: Move old turns to archival memory.
         """
         # Identify turns to archive
-        turns_to_archive = [
-            t for t in self._history
-            if t not in retained_turns
-        ]
+        turns_to_archive = [t for t in self._history if t not in retained_turns]
 
         if turns_to_archive:
             self._archive_turns(turns_to_archive)
@@ -184,7 +201,7 @@ class MemGPTLiteAgent(Agent):
                 user=turn.user,
                 assistant=turn.assistant,
                 embedding=embedding,
-                keywords=keywords
+                keywords=keywords,
             )
 
             # Add to archival memory
@@ -209,51 +226,109 @@ class MemGPTLiteAgent(Agent):
 
         # Existing patterns
         # 1. Numbers with units (dates, amounts, sizes)
-        number_patterns = re.findall(r'\b\d+(?:\.\d+)?\s*(?:gb|tb|mb|kb|%|requests?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|dollars?|\$|people|engineers?|developers?)\b', text_lower)
+        number_patterns = re.findall(
+            r"\b\d+(?:\.\d+)?\s*(?:gb|tb|mb|kb|%|requests?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|dollars?|\$|people|engineers?|developers?)\b",
+            text_lower,
+        )
         keywords.update(number_patterns)
 
         # 2. Specific dates (month name + day)
-        date_patterns = re.findall(r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?\b', text_lower)
+        date_patterns = re.findall(
+            r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?\b",
+            text_lower,
+        )
         keywords.update(date_patterns)
 
         # 3. Technology names (common patterns)
-        tech_words = ['aws', 'azure', 'gcp', 'google cloud', 'digitalocean',
-                      'postgresql', 'mysql', 'mongodb', 'sqlite', 'redis', 'memcached',
-                      'fastapi', 'flask', 'django', 'express', 'node.js', 'react', 'angular',
-                      'oauth', 'jwt', 'api key', 'api', 'sdk', 'cli',
-                      'docker', 'kubernetes', 'terraform', 'ansible', 'jenkins', 'gitlab ci', 'github actions']
+        tech_words = [
+            "aws",
+            "azure",
+            "gcp",
+            "google cloud",
+            "digitalocean",
+            "postgresql",
+            "mysql",
+            "mongodb",
+            "sqlite",
+            "redis",
+            "memcached",
+            "fastapi",
+            "flask",
+            "django",
+            "express",
+            "node.js",
+            "react",
+            "angular",
+            "oauth",
+            "jwt",
+            "api key",
+            "api",
+            "sdk",
+            "cli",
+            "docker",
+            "kubernetes",
+            "terraform",
+            "ansible",
+            "jenkins",
+            "gitlab ci",
+            "github actions",
+        ]
         for tech in tech_words:
             if tech in text_lower:
                 keywords.add(tech)
 
         # 4. Dollar amounts
-        dollar_patterns = re.findall(r'\$[\d,]+(?:\.\d{2})?', text)
+        dollar_patterns = re.findall(r"\$[\d,]+(?:\.\d{2})?", text)
         keywords.update([p.lower() for p in dollar_patterns])
 
         # 5. Quoted strings (often important)
         quoted = re.findall(r'"([^"]+)"', text)
-        keywords.update([q.lower() for q in quoted if len(q) < 50]) # Limit length to avoid noise
+        keywords.update(
+            [q.lower() for q in quoted if len(q) < 50]
+        )  # Limit length to avoid noise
 
         # New patterns
         # 6. Email addresses
-        email_patterns = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text_lower)
+        email_patterns = re.findall(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", text_lower
+        )
         keywords.update(email_patterns)
 
         # 7. URLs (basic detection)
-        url_patterns = re.findall(r'https?://\S+|www\.\S+', text_lower)
+        url_patterns = re.findall(r"https?://\S+|www\.\S+", text_lower)
         keywords.update(url_patterns)
 
         # 8. Phone numbers (simple format)
-        phone_patterns = re.findall(r'\b(?:\d{3}[-.\s]?)?\d{3}[-.\s]?\d{4}\b', text_lower)
+        phone_patterns = re.findall(
+            r"\b(?:\d{3}[-.\s]?)?\d{3}[-.\s]?\d{4}\b", text_lower
+        )
         keywords.update(phone_patterns)
 
         # 9. Proper nouns / capitalized words (more robust than just start of sentence)
         # Look for sequences of capitalized words, or capitalized words not at sentence start
         # This is a heuristic and might pick up some false positives.
-        capitalized_words = re.findall(r'\b[A-Z][a-z0-9]+\b|\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+\b', text)
+        capitalized_words = re.findall(
+            r"\b[A-Z][a-z0-9]+\b|\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+\b", text
+        )
         for word_or_phrase in capitalized_words:
             # Avoid adding single common words that are capitalized by sentence start
-            if word_or_phrase.lower() not in ['the', 'a', 'an', 'and', 'or', 'but', 'for', 'nor', 'so', 'yet', 'it', 'is', 'in', 'on', 'at']:
+            if word_or_phrase.lower() not in [
+                "the",
+                "a",
+                "an",
+                "and",
+                "or",
+                "but",
+                "for",
+                "nor",
+                "so",
+                "yet",
+                "it",
+                "is",
+                "in",
+                "on",
+                "at",
+            ]:
                 keywords.add(word_or_phrase.lower())
 
         return list(keywords)
@@ -263,8 +338,8 @@ class MemGPTLiteAgent(Agent):
         start_time = time.time()
 
         # 1. Retrieve from archival memory (semantic search)
-        semantic_results = []
-        keyword_results = []
+        semantic_results = []  # List of (index, similarity_score)
+        keyword_results_rrf = []  # Initialize here to avoid NameError
 
         if self._archival_memory:
             # Semantic search
@@ -272,24 +347,33 @@ class MemGPTLiteAgent(Agent):
             archival_embeddings = [e.embedding for e in self._archival_memory]
             similarities = batch_cosine_similarity(query_embedding, archival_embeddings)
 
+            # BUG FIX: Actually populate semantic_results from similarities!
+            # Create (index, score) pairs and sort by score descending
+            semantic_results = [
+                (i, float(sim)) for i, sim in enumerate(similarities)
+            ]
+            semantic_results.sort(key=lambda x: x[1], reverse=True)
+            semantic_results = semantic_results[: self.archival_top_k]  # Top-k
+
             if self.use_keyword_search:
                 question_keywords = self._extract_keywords(question)
                 keyword_matches = set()
                 for kw in question_keywords:
                     if kw in self._keyword_index:
                         keyword_matches.update(self._keyword_index[kw])
-                
+
                 # Convert set to list for ordered indexing and limit to top-k
-                keyword_matches_list = list(keyword_matches) 
-                
+                keyword_matches_list = list(keyword_matches)
+
                 # For RRF, we'll assign a dummy high score and rank based on order
-                keyword_results_rrf = []
-                for i, idx in enumerate(keyword_matches_list[:self.archival_top_k]):
-                    keyword_results_rrf.append((idx, 1.0, i + 1)) # (idx, dummy_score, rank)
+                for i, idx in enumerate(keyword_matches_list[: self.archival_top_k]):
+                    keyword_results_rrf.append(
+                        (idx, 1.0, i + 1)
+                    )  # (idx, dummy_score, rank)
 
         # 2. Combine results using Reciprocal Rank Fusion (RRF)
         fused_scores: Dict[int, float] = {}
-        RRF_K = 60 # Typically between 50-100
+        RRF_K = 60  # Typically between 50-100
 
         # Process semantic results
         for i, (idx, score) in enumerate(semantic_results):
@@ -304,12 +388,14 @@ class MemGPTLiteAgent(Agent):
 
         # Sort by fused RRF score
         reranked_archival_indices = sorted(
-            fused_scores.keys(),
-            key=lambda idx: fused_scores[idx],
-            reverse=True
-        )[:self.archival_top_k] # Limit to top-k after RRF
+            fused_scores.keys(), key=lambda idx: fused_scores[idx], reverse=True
+        )[
+            : self.archival_top_k
+        ]  # Limit to top-k after RRF
 
-        retrieved_entries = [self._archival_memory[idx] for idx in reranked_archival_indices]
+        retrieved_entries = [
+            self._archival_memory[idx] for idx in reranked_archival_indices
+        ]
 
         # Sort by turn_id for chronological presentation (within the RRF-selected top-k)
         retrieved_entries.sort(key=lambda e: e.turn_id)
@@ -318,21 +404,26 @@ class MemGPTLiteAgent(Agent):
         context_parts = []
 
         if retrieved_entries:
-            context_parts.append("## Archival Memory (retrieved from earlier conversation)")
+            context_parts.append(
+                "## Archival Memory (retrieved from earlier conversation)"
+            )
             for entry in retrieved_entries:
                 context_parts.append(f"[Turn {entry.turn_id}]")
                 context_parts.append(f"User: {entry.user}")
                 context_parts.append(f"Assistant: {entry.assistant}")
                 context_parts.append("")
 
-        if self._core_memory:
+        # Use _history (includes post-compression turns) instead of _core_memory
+        if self._history:
             context_parts.append("## Core Memory (recent conversation)")
-            for turn in self._core_memory:
+            for turn in self._history:
                 context_parts.append(f"User: {turn.user}")
                 context_parts.append(f"Assistant: {turn.assistant}")
                 context_parts.append("")
 
-        context = "\n".join(context_parts) if context_parts else "[No context available]"
+        context = (
+            "\n".join(context_parts) if context_parts else "[No context available]"
+        )
 
         # 4. Generate answer
         answer = self._generate_answer(context, question)
@@ -344,11 +435,11 @@ class MemGPTLiteAgent(Agent):
             latency_ms=latency,
             metadata={
                 "semantic_retrieved": len(semantic_results),
-                "keyword_retrieved": len(keyword_results),
+                "keyword_retrieved": len(keyword_results_rrf),
                 "total_retrieved": len(retrieved_entries),
                 "archival_size": len(self._archival_memory),
                 "core_memory_size": len(self._core_memory),
-            }
+            },
         )
 
     def _generate_answer(self, context: str, question: str) -> str:
@@ -372,12 +463,12 @@ Provide a concise, direct answer."""
             return "I don't have enough information."
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"Error: {e}"

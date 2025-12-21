@@ -19,6 +19,9 @@ const typeColors: Record<string, { bg: string, text: string }> = {
   key_fact: { bg: 'bg-green-500/10', text: 'text-green-500' },
   reminder: { bg: 'bg-purple-500/10', text: 'text-purple-500' },
   insight: { bg: 'bg-orange-500/10', text: 'text-orange-500' },
+  person_attribute: { bg: 'bg-amber-700/10', text: 'text-amber-700' },
+  event: { bg: 'bg-cyan-500/10', text: 'text-cyan-500' },
+  relationship: { bg: 'bg-gray-500/10', text: 'text-gray-500' },
 };
 
 export function MessageItem({ message, isExtracting }: MessageItemProps) {

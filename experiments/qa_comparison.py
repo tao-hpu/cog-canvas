@@ -26,11 +26,12 @@ sys.path.insert(0, str(project_root))
 
 # Load .env file
 from dotenv import load_dotenv
+
 load_dotenv(project_root / ".env")
 
 # Set OpenAI-compatible API configuration
-os.environ['OPENAI_API_KEY'] = os.getenv('API_KEY', '')
-os.environ['OPENAI_API_BASE'] = os.getenv('API_BASE', '')
+os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY", "")
+os.environ["OPENAI_API_BASE"] = os.getenv("API_BASE", "")
 
 from cogcanvas import Canvas, ObjectType
 from openai import OpenAI
@@ -47,7 +48,7 @@ QA_QUESTIONS = [
         "category": "Specific Decision",
         "expected_answer": "minimalMode will be deprecated in favor of the new handler architecture",
         "source_turn": 2,
-        "why_discriminative": "Requires remembering a specific technical decision from early discussion"
+        "why_discriminative": "Requires remembering a specific technical decision from early discussion",
     },
     {
         "id": "Q2",
@@ -55,7 +56,7 @@ QA_QUESTIONS = [
         "category": "Technical Detail",
         "expected_answer": "fallbackID always references STATIC_FILE",
         "source_turn": 8,
-        "why_discriminative": "Requires precise technical knowledge that summarization would lose"
+        "why_discriminative": "Requires precise technical knowledge that summarization would lose",
     },
     {
         "id": "Q3",
@@ -63,7 +64,7 @@ QA_QUESTIONS = [
         "category": "Reasoning",
         "expected_answer": "It requires big refactors that are not feasible for 14.x",
         "source_turn": 8,
-        "why_discriminative": "Requires remembering the reasoning behind a decision"
+        "why_discriminative": "Requires remembering the reasoning behind a decision",
     },
     {
         "id": "Q4",
@@ -71,7 +72,7 @@ QA_QUESTIONS = [
         "category": "Todo List",
         "expected_answer": "1) Document routing behavior specification, 2) Document middleware matcher behavior, 3) Complete routing specification documentation",
         "source_turn": [3, 7, 11],
-        "why_discriminative": "Requires aggregating information from multiple turns"
+        "why_discriminative": "Requires aggregating information from multiple turns",
     },
     {
         "id": "Q5",
@@ -79,14 +80,14 @@ QA_QUESTIONS = [
         "category": "Stakeholder Preference",
         "expected_answer": "Deno Deploy prefers a singular entrypoint over multiple ones, as their serverless architecture would benefit from a unified entry",
         "source_turn": 4,
-        "why_discriminative": "Requires remembering a specific stakeholder's preference"
+        "why_discriminative": "Requires remembering a specific stakeholder's preference",
     },
 ]
 
 
 def initialize_canvas():
     """Initialize CogCanvas with extracted artifacts from RFC."""
-    model = os.getenv('MODEL_WEAK_2', 'gpt-4o-mini')
+    model = os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
     canvas = Canvas(extractor_model=model)
 
     print("Processing RFC turns through CogCanvas...")
@@ -105,8 +106,8 @@ def initialize_canvas():
 def generate_summary(turns: list[dict]) -> str:
     """Generate a summary of all turns using LLM."""
     client = OpenAI(
-        api_key=os.environ.get('OPENAI_API_KEY'),
-        base_url=os.environ.get('OPENAI_API_BASE')
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_API_BASE"),
     )
 
     # Combine all turns into a single text
@@ -115,19 +116,19 @@ def generate_summary(turns: list[dict]) -> str:
         full_text += f"\n--- Turn {i} ---\nUser: {turn['user']}\nAssistant: {turn['assistant']}\n"
 
     response = client.chat.completions.create(
-        model=os.getenv('MODEL_WEAK_2', 'gpt-4o-mini'),
+        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Summarize the following technical discussion into a concise summary that captures the main points, decisions, and action items. Keep it under 500 words."
+                "content": "You are a helpful assistant. Summarize the following technical discussion into a concise summary that captures the main points, decisions, and action items. Keep it under 500 words.",
             },
             {
                 "role": "user",
-                "content": f"Please summarize this discussion:\n{full_text}"
-            }
+                "content": f"Please summarize this discussion:\n{full_text}",
+            },
         ],
         max_tokens=600,
-        temperature=0.3
+        temperature=0.3,
     )
 
     return response.choices[0].message.content
@@ -136,8 +137,8 @@ def generate_summary(turns: list[dict]) -> str:
 def answer_with_cogcanvas(canvas: Canvas, question: str) -> dict:
     """Answer question using CogCanvas retrieve + inject."""
     client = OpenAI(
-        api_key=os.environ.get('OPENAI_API_KEY'),
-        base_url=os.environ.get('OPENAI_API_BASE')
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_API_BASE"),
     )
 
     # Retrieve relevant objects
@@ -149,70 +150,67 @@ def answer_with_cogcanvas(canvas: Canvas, question: str) -> dict:
     # Build citations info
     citations = []
     for obj in result.objects:
-        citations.append({
-            "type": obj.type.value,
-            "content": obj.content[:100],
-            "turn": obj.turn_id
-        })
+        citations.append(
+            {"type": obj.type.value, "content": obj.content[:100], "turn": obj.turn_id}
+        )
 
     # Generate answer
     response = client.chat.completions.create(
-        model=os.getenv('MODEL_WEAK_2', 'gpt-4o-mini'),
+        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
-                "content": "Answer the question based on the provided context. Be specific and cite relevant turns when possible. If you find specific information, quote it."
+                "content": "Answer the question based on the provided context. Be specific and cite relevant turns when possible. If you find specific information, quote it.",
             },
             {
                 "role": "user",
-                "content": f"Context from conversation:\n{context}\n\nQuestion: {question}"
-            }
+                "content": f"Context from conversation:\n{context}\n\nQuestion: {question}",
+            },
         ],
         max_tokens=300,
-        temperature=0.3
+        temperature=0.3,
     )
 
     return {
         "answer": response.choices[0].message.content,
         "citations": citations,
-        "objects_retrieved": result.count
+        "objects_retrieved": result.count,
     }
 
 
 def answer_with_summary(summary: str, question: str) -> dict:
     """Answer question using only the summary."""
     client = OpenAI(
-        api_key=os.environ.get('OPENAI_API_KEY'),
-        base_url=os.environ.get('OPENAI_API_BASE')
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_API_BASE"),
     )
 
     response = client.chat.completions.create(
-        model=os.getenv('MODEL_WEAK_2', 'gpt-4o-mini'),
+        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
-                "content": "Answer the question based on the provided summary. Be specific if you can. If the information is not available in the summary, say so."
+                "content": "Answer the question based on the provided summary. Be specific if you can. If the information is not available in the summary, say so.",
             },
             {
                 "role": "user",
-                "content": f"Summary of discussion:\n{summary}\n\nQuestion: {question}"
-            }
+                "content": f"Summary of discussion:\n{summary}\n\nQuestion: {question}",
+            },
         ],
         max_tokens=300,
-        temperature=0.3
+        temperature=0.3,
     )
 
-    return {
-        "answer": response.choices[0].message.content,
-        "context_type": "summary"
-    }
+    return {"answer": response.choices[0].message.content, "context_type": "summary"}
 
 
-def answer_with_truncation(turns: list[dict], question: str, keep_last: int = 3) -> dict:
+def answer_with_truncation(
+    turns: list[dict], question: str, keep_last: int = 3
+) -> dict:
     """Answer question with only the last N turns (simulating truncation)."""
     client = OpenAI(
-        api_key=os.environ.get('OPENAI_API_KEY'),
-        base_url=os.environ.get('OPENAI_API_BASE')
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_API_BASE"),
     )
 
     # Only keep last N turns
@@ -223,25 +221,25 @@ def answer_with_truncation(turns: list[dict], question: str, keep_last: int = 3)
         context += f"\n--- Turn {turn_num} ---\nUser: {turn['user']}\nAssistant: {turn['assistant']}\n"
 
     response = client.chat.completions.create(
-        model=os.getenv('MODEL_WEAK_2', 'gpt-4o-mini'),
+        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
-                "content": "Answer the question based on the provided conversation context. If the information is not available, say so."
+                "content": "Answer the question based on the provided conversation context. If the information is not available, say so.",
             },
             {
                 "role": "user",
-                "content": f"Recent conversation:\n{context}\n\nQuestion: {question}"
-            }
+                "content": f"Recent conversation:\n{context}\n\nQuestion: {question}",
+            },
         ],
         max_tokens=300,
-        temperature=0.3
+        temperature=0.3,
     )
 
     return {
         "answer": response.choices[0].message.content,
         "turns_available": keep_last,
-        "context_type": "truncation"
+        "context_type": "truncation",
     }
 
 
@@ -270,10 +268,10 @@ def run_comparison():
             "timestamp": datetime.now().isoformat(),
             "num_turns": len(GITHUB_DISCUSSION_TURNS),
             "num_questions": len(QA_QUESTIONS),
-            "methods": ["cogcanvas", "summarization", "truncation"]
+            "methods": ["cogcanvas", "summarization", "truncation"],
         },
         "summary_generated": summary,
-        "questions": []
+        "questions": [],
     }
 
     print("Step 3: Running QA comparison...")
@@ -286,26 +284,30 @@ def run_comparison():
 
         # CogCanvas answer
         print("  [CogCanvas] Answering...")
-        cogcanvas_result = answer_with_cogcanvas(canvas, q['question'])
+        cogcanvas_result = answer_with_cogcanvas(canvas, q["question"])
 
         # Summarization answer
         print("  [Summarization] Answering...")
-        summary_result = answer_with_summary(summary, q['question'])
+        summary_result = answer_with_summary(summary, q["question"])
 
         # Truncation answer
         print("  [Truncation] Answering...")
-        truncation_result = answer_with_truncation(GITHUB_DISCUSSION_TURNS, q['question'], keep_last=3)
+        truncation_result = answer_with_truncation(
+            GITHUB_DISCUSSION_TURNS, q["question"], keep_last=3
+        )
 
-        results["questions"].append({
-            "id": q["id"],
-            "question": q["question"],
-            "category": q["category"],
-            "expected_answer": q["expected_answer"],
-            "source_turn": q["source_turn"],
-            "cogcanvas": cogcanvas_result,
-            "summarization": summary_result,
-            "truncation": truncation_result
-        })
+        results["questions"].append(
+            {
+                "id": q["id"],
+                "question": q["question"],
+                "category": q["category"],
+                "expected_answer": q["expected_answer"],
+                "source_turn": q["source_turn"],
+                "cogcanvas": cogcanvas_result,
+                "summarization": summary_result,
+                "truncation": truncation_result,
+            }
+        )
 
         # Print preview
         print(f"  [CogCanvas] {cogcanvas_result['answer'][:100]}...")
@@ -327,8 +329,12 @@ def generate_markdown_table(results: dict) -> str:
     for q in results["questions"]:
         # Truncate answers for table
         cog_ans = q["cogcanvas"]["answer"][:150].replace("\n", " ").replace("|", "\\|")
-        sum_ans = q["summarization"]["answer"][:150].replace("\n", " ").replace("|", "\\|")
-        trunc_ans = q["truncation"]["answer"][:150].replace("\n", " ").replace("|", "\\|")
+        sum_ans = (
+            q["summarization"]["answer"][:150].replace("\n", " ").replace("|", "\\|")
+        )
+        trunc_ans = (
+            q["truncation"]["answer"][:150].replace("\n", " ").replace("|", "\\|")
+        )
 
         # Add ... if truncated
         if len(q["cogcanvas"]["answer"]) > 150:
@@ -362,14 +368,32 @@ def generate_latex_table(results: dict) -> str:
     for q in results["questions"]:
         # Truncate and escape for LaTeX
         def escape_latex(s):
-            return s.replace("_", r"\_").replace("&", r"\&").replace("%", r"\%").replace("#", r"\#")
+            return (
+                s.replace("_", r"\_")
+                .replace("&", r"\&")
+                .replace("%", r"\%")
+                .replace("#", r"\#")
+            )
 
-        question_short = escape_latex(q["question"][:40] + ("..." if len(q["question"]) > 40 else ""))
-        cog_ans = escape_latex(q["cogcanvas"]["answer"][:120] + ("..." if len(q["cogcanvas"]["answer"]) > 120 else ""))
-        sum_ans = escape_latex(q["summarization"]["answer"][:120] + ("..." if len(q["summarization"]["answer"]) > 120 else ""))
-        trunc_ans = escape_latex(q["truncation"]["answer"][:120] + ("..." if len(q["truncation"]["answer"]) > 120 else ""))
+        question_short = escape_latex(
+            q["question"][:40] + ("..." if len(q["question"]) > 40 else "")
+        )
+        cog_ans = escape_latex(
+            q["cogcanvas"]["answer"][:120]
+            + ("..." if len(q["cogcanvas"]["answer"]) > 120 else "")
+        )
+        sum_ans = escape_latex(
+            q["summarization"]["answer"][:120]
+            + ("..." if len(q["summarization"]["answer"]) > 120 else "")
+        )
+        trunc_ans = escape_latex(
+            q["truncation"]["answer"][:120]
+            + ("..." if len(q["truncation"]["answer"]) > 120 else "")
+        )
 
-        latex += f"{question_short} & {cog_ans} & {sum_ans} & {trunc_ans} \\\\\n\\midrule\n"
+        latex += (
+            f"{question_short} & {cog_ans} & {sum_ans} & {trunc_ans} \\\\\n\\midrule\n"
+        )
 
     latex += r"""
 \bottomrule
@@ -382,19 +406,22 @@ def generate_latex_table(results: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Run QA comparison experiment")
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default="experiments/results/qa_comparison.json",
-        help="Output JSON file path"
+        help="Output JSON file path",
     )
     parser.add_argument(
-        "--markdown", "-m",
+        "--markdown",
+        "-m",
         default="experiments/results/qa_comparison_table.md",
-        help="Output markdown table file path"
+        help="Output markdown table file path",
     )
     parser.add_argument(
-        "--latex", "-l",
+        "--latex",
+        "-l",
         default="experiments/results/qa_comparison_table.tex",
-        help="Output LaTeX table file path"
+        help="Output LaTeX table file path",
     )
 
     args = parser.parse_args()
@@ -433,8 +460,8 @@ def main():
         print(f"\n{q['id']}: {q['question']}")
         print(f"  Expected: {q['expected_answer']}")
         print(f"  CogCanvas: {q['cogcanvas']['answer'][:200]}...")
-        if "citations" in q['cogcanvas']:
-            turns = [c['turn'] for c in q['cogcanvas']['citations']]
+        if "citations" in q["cogcanvas"]:
+            turns = [c["turn"] for c in q["cogcanvas"]["citations"]]
             print(f"  (Citations from turns: {turns})")
 
     print("\n" + "-" * 80)

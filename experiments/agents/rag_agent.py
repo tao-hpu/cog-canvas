@@ -19,14 +19,23 @@ from dataclasses import dataclass
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
-from cogcanvas.embeddings import APIEmbeddingBackend, MockEmbeddingBackend, batch_cosine_similarity
+from experiments.llm_utils import call_llm_with_retry
+from cogcanvas.embeddings import (
+    APIEmbeddingBackend,
+    MockEmbeddingBackend,
+    batch_cosine_similarity,
+)
+from cogcanvas.reranker import Reranker, MockRerankerBackend
+
 
 @dataclass
 class TextChunk:
     """A chunk of text with its embedding."""
+
     content: str
     embedding: List[float]
     source_turns: List[int]  # Which turns this chunk covers
+
 
 class RagAgent(Agent):
     """
@@ -48,33 +57,46 @@ class RagAgent(Agent):
         model: str = None,
         embedding_model: str = None,
         retain_recent: int = 5,
-        chunk_size: int = 1000,  # Characters
-        chunk_overlap: int = 200,
-        top_k: int = 3,
+        chunk_size: int = 512,  # Characters (default for RAG-default config)
+        overlap: int = 100,  # Overlap between chunks
+        top_k: int = 10,  # Number of chunks to retrieve (increased from 5 to 10)
+        use_reranker: bool = False,  # Whether to use reranking
     ):
         """
         Initialize RagAgent.
 
         Args:
-            model: LLM for answering (default: MODEL_WEAK_2)
+            model: LLM for answering (default: MODEL_DEFAULT)
             embedding_model: Embedding model name (default: EMBEDDING_MODEL)
             retain_recent: Number of recent turns to keep in context
-            chunk_size: Size of text chunks in characters
-            chunk_overlap: Overlap between chunks in characters
-            top_k: Number of chunks to retrieve
+            chunk_size: Size of text chunks in characters (default: 512)
+            overlap: Overlap between chunks in characters (default: 100)
+            top_k: Number of chunks to retrieve (default: 10)
+            use_reranker: Whether to use reranking after retrieval (default: False)
+
+        Recommended configurations for testing:
+            - RAG-small: chunk_size=256, top_k=5, overlap=50
+            - RAG-default: chunk_size=512, top_k=5, overlap=100
+            - RAG-large: chunk_size=1024, top_k=5, overlap=200
+            - RAG-topk10: chunk_size=512, top_k=10, overlap=100
+            - RAG-rerank: chunk_size=512, top_k=10, overlap=100, use_reranker=True
         """
         from dotenv import load_dotenv
+
         load_dotenv()
 
         self.retain_recent = retain_recent
         self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.overlap = overlap
         self.top_k = top_k
+        self.use_reranker = use_reranker
 
         # Models
-        self.model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
-        embed_model_name = embedding_model or os.getenv("EMBEDDING_MODEL", "bge-large-zh-v1.5")
-        
+        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        embed_model_name = embedding_model or os.getenv(
+            "EMBEDDING_MODEL", "bge-large-zh-v1.5"
+        )
+
         # Initialize LLM client
         self._client = None
         self._init_client()
@@ -82,20 +104,60 @@ class RagAgent(Agent):
         # Initialize Embedding backend
         # Prefer dedicated EMBEDDING_API_* vars, fallback to general API_*
         try:
-            embed_api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            embed_api_base = os.getenv("EMBEDDING_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            embed_api_key = (
+                os.getenv("EMBEDDING_API_KEY")
+                or os.getenv("API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+            )
+            embed_api_base = (
+                os.getenv("EMBEDDING_API_BASE")
+                or os.getenv("API_BASE")
+                or os.getenv("OPENAI_API_BASE")
+            )
             if embed_api_key:
                 self.embedder = APIEmbeddingBackend(
                     model=embed_model_name,
                     api_key=embed_api_key,
-                    api_base=embed_api_base
+                    api_base=embed_api_base,
                 )
             else:
-                print("Warning: EMBEDDING_API_KEY/API_KEY not set, using mock embeddings")
+                print(
+                    "Warning: EMBEDDING_API_KEY/API_KEY not set, using mock embeddings"
+                )
                 self.embedder = MockEmbeddingBackend()
         except Exception as e:
             print(f"Failed to init embedding backend: {e}. Using mock.")
             self.embedder = MockEmbeddingBackend()
+
+        # Initialize Reranker (if enabled)
+        self.reranker = None
+        if self.use_reranker:
+            try:
+                reranker_api_key = (
+                    os.getenv("EMBEDDING_API_KEY")
+                    or os.getenv("API_KEY")
+                    or os.getenv("OPENAI_API_KEY")
+                )
+                reranker_api_base = (
+                    os.getenv("EMBEDDING_API_BASE")
+                    or os.getenv("API_BASE")
+                    or os.getenv("OPENAI_API_BASE")
+                )
+                if reranker_api_key:
+                    self.reranker = Reranker(
+                        model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+                        api_key=reranker_api_key,
+                        api_base=reranker_api_base,
+                        use_mock=False,
+                    )
+                else:
+                    print(
+                        "Warning: EMBEDDING_API_KEY/API_KEY not set, using mock reranker"
+                    )
+                    self.reranker = Reranker(use_mock=True)
+            except Exception as e:
+                print(f"Failed to init reranker: {e}. Using mock.")
+                self.reranker = Reranker(use_mock=True)
 
         # State
         self._history: List[ConversationTurn] = []
@@ -106,9 +168,10 @@ class RagAgent(Agent):
         """Initialize LLM client."""
         try:
             from openai import OpenAI
+
             api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
             api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
-            
+
             if api_key:
                 self._client = OpenAI(api_key=api_key, base_url=api_base)
         except ImportError:
@@ -116,7 +179,8 @@ class RagAgent(Agent):
 
     @property
     def name(self) -> str:
-        return f"RAG(k={self.top_k}, chunk={self.chunk_size})"
+        rerank_suffix = "+rerank" if self.use_reranker else ""
+        return f"RAG(k={self.top_k}, chunk={self.chunk_size}{rerank_suffix})"
 
     def reset(self) -> None:
         """Reset state."""
@@ -133,10 +197,7 @@ class RagAgent(Agent):
         Handle compression: Chunk and embed old history.
         """
         # Identify turns to move to long-term memory (vector store)
-        turns_to_process = [
-            t for t in self._history
-            if t not in retained_turns
-        ]
+        turns_to_process = [t for t in self._history if t not in retained_turns]
 
         if turns_to_process:
             self._process_into_chunks(turns_to_process)
@@ -154,7 +215,7 @@ class RagAgent(Agent):
         # 1. Convert turns to a single text string with turn markers
         full_text = ""
         turn_mapping = []  # [(start_char, end_char, turn_id), ...]
-        
+
         for turn in turns:
             start_idx = len(full_text)
             turn_text = f"[Turn {turn.turn_id}] User: {turn.user}\nAssistant: {turn.assistant}\n\n"
@@ -168,18 +229,18 @@ class RagAgent(Agent):
         start = 0
         while start < len(full_text):
             end = min(start + self.chunk_size, len(full_text))
-            
+
             # If not at end, try to break at newline to avoid cutting words/lines
             if end < len(full_text):
                 # Look for last newline in the last 20% of the chunk
                 search_start = max(start, int(end - self.chunk_size * 0.2))
-                last_newline = full_text.rfind('\n', search_start, end)
+                last_newline = full_text.rfind("\n", search_start, end)
                 if last_newline != -1:
                     end = last_newline + 1
-            
+
             chunk_content = full_text[start:end]
             chunks_text.append(chunk_content)
-            
+
             # Identify source turns for this chunk
             sources = []
             for t_start, t_end, t_id in turn_mapping:
@@ -193,7 +254,7 @@ class RagAgent(Agent):
             if end >= len(full_text):
                 break
 
-            start = end - self.chunk_overlap
+            start = end - self.overlap
             # Ensure we always advance (prevent infinite loop)
             if start <= 0 or start >= end:
                 start = end
@@ -201,13 +262,15 @@ class RagAgent(Agent):
         # 3. Embed chunks
         if chunks_text:
             embeddings = self.embedder.embed_batch(chunks_text)
-            
-            for content, embedding, sources in zip(chunks_text, embeddings, chunk_sources):
-                self._vector_store.append(TextChunk(
-                    content=content,
-                    embedding=embedding,
-                    source_turns=sources
-                ))
+
+            for content, embedding, sources in zip(
+                chunks_text, embeddings, chunk_sources
+            ):
+                self._vector_store.append(
+                    TextChunk(
+                        content=content, embedding=embedding, source_turns=sources
+                    )
+                )
 
     def answer_question(self, question: str) -> AgentResponse:
         """Answer question using retrieved chunks + recent history."""
@@ -216,50 +279,73 @@ class RagAgent(Agent):
         # 1. Retrieve relevant chunks
         retrieved_chunks = []
         scores = []
-        
+
         if self._vector_store:
             query_embedding = self.embedder.embed(question)
             chunk_embeddings = [c.embedding for c in self._vector_store]
-            
+
             similarities = batch_cosine_similarity(query_embedding, chunk_embeddings)
-            
+
             # Sort by score
             scored_chunks = sorted(
-                zip(self._vector_store, similarities),
-                key=lambda x: x[1],
-                reverse=True
+                zip(self._vector_store, similarities), key=lambda x: x[1], reverse=True
             )
-            
-            top_results = scored_chunks[:self.top_k]
-            retrieved_chunks = [c for c, s in top_results]
-            scores = [s for c, s in top_results]
+
+            # Determine how many candidates to retrieve before reranking
+            if self.use_reranker and self.reranker is not None:
+                # Retrieve 2x top_k candidates for reranking
+                candidate_k = min(self.top_k * 2, len(scored_chunks))
+                candidate_results = scored_chunks[:candidate_k]
+                candidate_chunks = [c for c, s in candidate_results]
+
+                # 2. Rerank the candidates
+                chunk_texts = [chunk.content for chunk in candidate_chunks]
+                reranked_results = self.reranker.rerank(
+                    question, chunk_texts, top_k=self.top_k
+                )
+
+                # Extract final chunks and scores based on reranking
+                retrieved_chunks = [
+                    candidate_chunks[idx] for idx, score in reranked_results
+                ]
+                scores = [score for idx, score in reranked_results]
+            else:
+                # No reranking: use top_k results directly
+                top_results = scored_chunks[: self.top_k]
+                retrieved_chunks = [c for c, s in top_results]
+                scores = [s for c, s in top_results]
 
         # 2. Build context
         context_parts = []
-        
+
         if retrieved_chunks:
             context_parts.append("## Retrieved Context (from earlier conversation)")
-            # Re-sort chunks by turn ID (chronological) if possible, 
+            # Re-sort chunks by turn ID (chronological) if possible,
             # but usually RAG just concats by relevance. Let's stick to relevance or maybe reverse relevance?
-            # Actually, chronological makes more sense for reading. 
+            # Actually, chronological makes more sense for reading.
             # But naive RAG often just dumps them. Let's dump them but clearly separated.
             for i, chunk in enumerate(retrieved_chunks):
-                context_parts.append(f"--- Chunk {i+1} (Relevance: {scores[i]:.2f}) ---")
+                context_parts.append(
+                    f"--- Chunk {i+1} (Relevance: {scores[i]:.2f}) ---"
+                )
                 context_parts.append(chunk.content)
             context_parts.append("")
 
-        if self._retained_history:
+        # Use _history (includes post-compression turns) instead of _retained_history
+        if self._history:
             context_parts.append("## Recent Conversation")
-            for turn in self._retained_history:
+            for turn in self._history:
                 context_parts.append(f"User: {turn.user}")
                 context_parts.append(f"Assistant: {turn.assistant}")
                 context_parts.append("")
 
-        context = "\n".join(context_parts) if context_parts else "[No context available]"
+        context = (
+            "\n".join(context_parts) if context_parts else "[No context available]"
+        )
 
         # 3. Generate Answer
         answer = self._generate_answer(context, question)
-        
+
         latency = (time.time() - start_time) * 1000
 
         return AgentResponse(
@@ -269,11 +355,11 @@ class RagAgent(Agent):
                 "retrieved_chunks": len(retrieved_chunks),
                 "vector_store_size": len(self._vector_store),
                 "top_score": scores[0] if scores else 0.0,
-            }
+            },
         )
 
     def _generate_answer(self, context: str, question: str) -> str:
-        """Generate answer via LLM."""
+        """Generate answer via LLM with exponential backoff retry."""
         prompt = f"""Answer the question based on the provided conversation context (including retrieved fragments from history).
 If the information is not available, say "I don't have enough information."
 
@@ -289,12 +375,12 @@ Provide a concise, direct answer."""
             return "I don't have enough information."
 
         try:
-            response = self._client.chat.completions.create(
+            return call_llm_with_retry(
+                client=self._client,
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
         except Exception as e:
             return f"Error: {e}"

@@ -17,6 +17,9 @@ const typeColors: Record<string, string> = {
   key_fact: '#22c55e',
   reminder: '#a855f7',
   insight: '#f97316',
+  person_attribute: '#A0522D', // Sienna
+  event: '#00CED1', // DarkTurquoise
+  relationship: '#696969', // DimGray
 };
 
 export function GraphView({ data, width, height }: GraphViewProps) {

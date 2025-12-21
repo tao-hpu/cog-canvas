@@ -324,6 +324,10 @@ Ensure the backend CORS configuration matches your frontend URL in `web/backend/
 CORS_ORIGINS=http://localhost:3800
 ```
 
+## Experiments
+
+Evaluation scripts and benchmarks are in `experiments/`. See [experiments/README.md](experiments/README.md) for details.
+
 ## Roadmap
 
 - [x] **Phase 1: MVP** - Core extraction & retrieval

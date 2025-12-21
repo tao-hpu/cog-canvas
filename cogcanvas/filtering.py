@@ -108,12 +108,12 @@ class RetrievalFilter:
         Initialize the retrieval filter.
 
         Args:
-            model: Model to use for filtering (default: MODEL_WEAK_2 or gpt-4o-mini)
+            model: Model to use for filtering (default: MODEL_DEFAULT or gpt-4o-mini)
             prompt_template: Custom filter prompt template
             min_relevance_score: Minimum score (0-1) to include an object
         """
         self._client = None
-        self._model = model or os.getenv("MODEL_WEAK_2", "gpt-4o-mini")
+        self._model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
         self.prompt_template = prompt_template or FILTER_PROMPT_TEMPLATE
         self.min_relevance_score = min_relevance_score
 
@@ -284,9 +284,7 @@ class RetrievalFilter:
                     else f' | Quote: "{obj.quote}"'
                 )
 
-            lines.append(
-                f"[{obj.id}] [{type_label}] {turn_info} {content}{quote_info}"
-            )
+            lines.append(f"[{obj.id}] [{type_label}] {turn_info} {content}{quote_info}")
         return "\n".join(lines)
 
     def _parse_filter_response(

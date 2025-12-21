@@ -68,6 +68,8 @@ class AnthropicBackend(LLMBackend):
         user_message: str,
         assistant_message: str,
         existing_objects: Optional[List[CanvasObject]] = None,
+        turn_id: int = 0,
+        enable_temporal_fallback: bool = True,
     ) -> List[CanvasObject]:
         """
         Extract canvas objects using Claude with tool use.
@@ -76,6 +78,8 @@ class AnthropicBackend(LLMBackend):
             user_message: The user's message
             assistant_message: The assistant's response
             existing_objects: Existing objects for deduplication context
+            turn_id: Current conversation turn (for temporal artifacts)
+            enable_temporal_fallback: Use regex to catch dates LLM might miss
 
         Returns:
             List of extracted CanvasObjects
@@ -150,6 +154,7 @@ class AnthropicBackend(LLMBackend):
             }
         ]
 
+        llm_objects = []
         try:
             response = self.client.messages.create(
                 model=self.model,
@@ -165,12 +170,28 @@ class AnthropicBackend(LLMBackend):
             )
 
             # Parse tool use response
-            return self._parse_tool_response(response)
+            llm_objects = self._parse_tool_response(response)
+
+            # Set turn_id for all objects
+            for obj in llm_objects:
+                obj.turn_id = turn_id
 
         except Exception as e:
-            # Log error but don't crash - return empty list
+            # Log error but don't crash - continue with temporal fallback
             print(f"Extraction error: {e}")
-            return []
+
+        # Temporal fallback: use regex to catch dates LLM might have missed
+        if enable_temporal_fallback:
+            try:
+                from cogcanvas.temporal import extract_and_merge_temporal
+                full_text = f"{user_message}\n{assistant_message}"
+                llm_objects = extract_and_merge_temporal(
+                    full_text, llm_objects, turn_id, source="user"
+                )
+            except ImportError:
+                pass  # Temporal module not available, skip fallback
+
+        return llm_objects
 
     def _parse_tool_response(self, response) -> List[CanvasObject]:
         """Parse Claude tool use response into CanvasObjects."""

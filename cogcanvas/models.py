@@ -10,11 +10,17 @@ import uuid
 class ObjectType(Enum):
     """Types of canvas objects that can be extracted from dialogue."""
 
+    # Original types (task-oriented)
     DECISION = "decision"      # Choices/decisions made
     TODO = "todo"              # Action items, tasks to do
     KEY_FACT = "key_fact"      # Important facts, numbers, names
     REMINDER = "reminder"      # Constraints, preferences, rules
     INSIGHT = "insight"        # Conclusions, learnings, realizations
+
+    # Extended types (social/personal conversations - LoCoMo)
+    PERSON_ATTRIBUTE = "person_attribute"  # Personal traits, status, identity
+    EVENT = "event"                        # Activities with time context
+    RELATIONSHIP = "relationship"          # Interpersonal connections
 
 
 @dataclass
@@ -62,6 +68,11 @@ class CanvasObject:
     leads_to: List[str] = field(default_factory=list)        # Causal: this led to...
     caused_by: List[str] = field(default_factory=list)       # Causal: caused by...
 
+    # VAGE: Learned schema fields (Phase 2)
+    cluster_id: Optional[int] = None          # Learned cluster assignment
+    type_confidence: float = 1.0              # LLM's confidence in type assignment
+    vulnerability_score: Optional[float] = None  # Predicted vulnerability to compression
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -88,6 +99,10 @@ class CanvasObject:
             "referenced_by": self.referenced_by,
             "leads_to": self.leads_to,
             "caused_by": self.caused_by,
+            # VAGE: Learned schema fields
+            "cluster_id": self.cluster_id,
+            "type_confidence": self.type_confidence,
+            "vulnerability_score": self.vulnerability_score,
         }
 
     @classmethod
@@ -106,6 +121,10 @@ class CanvasObject:
         data.setdefault("event_time", None)
         data.setdefault("event_time_raw", None)
         data.setdefault("session_datetime", None)
+        # Handle legacy data without VAGE fields
+        data.setdefault("cluster_id", None)
+        data.setdefault("type_confidence", 1.0)
+        data.setdefault("vulnerability_score", None)
         # Remove legacy citation field if present
         data.pop("citation", None)
         return cls(**data)

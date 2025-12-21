@@ -14,9 +14,18 @@ import time
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
+from experiments.llm_utils import call_llm_with_retry
 
 from cogcanvas import Canvas
 from cogcanvas.models import ObjectType
+from cogcanvas.reranker import Reranker
+from experiments.extraction_cache import (
+    ExtractionCache,
+    ExtractionConfig,
+    get_canvas_state_dict,
+    restore_canvas_state,
+    get_extraction_config_for_agent,
+)
 
 
 class CogCanvasAgent(Agent):
@@ -36,8 +45,10 @@ class CogCanvasAgent(Agent):
         self,
         extractor_model: str = None,  # None = load from env
         embedding_model: str = None,  # None = load from env
-        retrieval_top_k: int = 5,
+        retrieval_top_k: int = 10,
         enable_graph_expansion: bool = True,  # New flag for ablation
+        graph_hops: int = 1,  # Number of hops for graph expansion (default 1 for backward compat)
+        use_reranker: bool = False,  # Enable reranking after retrieval
         use_real_llm_for_answer: bool = True,  # Default to True for fair comparison
         # Ablation Parameters
         enable_temporal_heuristic: bool = True,
@@ -46,6 +57,15 @@ class CogCanvasAgent(Agent):
         # LLM Filtering Parameters
         use_llm_filter: bool = False,  # Enable LLM-based filtering (new feature)
         filter_candidate_k: int = 20,  # Number of candidates before filtering
+        # Graph Construction Parameters
+        reference_threshold: float = 0.5,  # Threshold for reference links
+        causal_threshold: float = 0.45,  # Threshold for causal links
+        # VAGE Parameters
+        enable_vage: bool = False,  # Enable Vulnerability-Aware Greedy Extraction
+        use_learned_vage: bool = False,  # Use learned vulnerability model
+        vage_budget_k: int = 10,  # Max objects to keep per turn
+        vage_mode: str = "off",  # "off" | "standard" | "chain" (chain uses graph-aware selection)
+        vage_verbose: bool = False,  # Print detailed VAGE logs
     ):
         """
         Initialize CogCanvas agent.
@@ -53,14 +73,23 @@ class CogCanvasAgent(Agent):
         Args:
             extractor_model: Model for extraction
             embedding_model: Model for embeddings
-            retrieval_top_k: Number of objects to retrieve
-            enable_graph_expansion: Whether to use 1-hop graph expansion (Ablation)
+            retrieval_top_k: Number of objects to retrieve (default: 10)
+            enable_graph_expansion: Whether to use N-hop graph expansion (Ablation)
+            graph_hops: Number of hops for graph expansion (default: 1)
+            use_reranker: Enable reranking after retrieval
             use_real_llm_for_answer: If True, use LLM for answer generation
             enable_temporal_heuristic: Enable temporal causality rule in graph construction
             retrieval_method: Retrieval strategy
             prompt_style: Prompting strategy
             use_llm_filter: Enable LLM-based filtering to improve precision
             filter_candidate_k: Number of candidates to retrieve before filtering
+            reference_threshold: Min cosine similarity for 'references' relation
+            causal_threshold: Min cosine similarity for 'caused_by' relation
+            enable_vage: Enable VAGE for optimal artifact selection
+            use_learned_vage: Use learned vulnerability model instead of heuristics
+            vage_budget_k: Max objects to keep per turn when VAGE is enabled
+            vage_mode: VAGE mode - "off", "standard" (original), or "chain" (graph-aware)
+            vage_verbose: Print detailed VAGE progress logs
         """
         import os
         from dotenv import load_dotenv
@@ -69,7 +98,7 @@ class CogCanvasAgent(Agent):
 
         # Load from .env if not specified
         self.extractor_model = extractor_model or os.getenv(
-            "MODEL_WEAK_2", "gpt-4o-mini"
+            "MODEL_DEFAULT", "gpt-4o-mini"
         )
         self.embedding_model = embedding_model or os.getenv(
             "EMBEDDING_MODEL", "bge-large-zh-v1.5"
@@ -77,6 +106,8 @@ class CogCanvasAgent(Agent):
 
         self.retrieval_top_k = retrieval_top_k
         self.enable_graph_expansion = enable_graph_expansion
+        self.graph_hops = graph_hops
+        self.use_reranker = use_reranker
         self.use_real_llm_for_answer = use_real_llm_for_answer
 
         # Ablation config
@@ -88,10 +119,26 @@ class CogCanvasAgent(Agent):
         self.use_llm_filter = use_llm_filter
         self.filter_candidate_k = filter_candidate_k
 
+        # Graph construction thresholds
+        self.reference_threshold = reference_threshold
+        self.causal_threshold = causal_threshold
+
+        # VAGE config
+        self.enable_vage = enable_vage
+        self.use_learned_vage = use_learned_vage
+        self.vage_budget_k = vage_budget_k
+        self.vage_mode = vage_mode
+        self.vage_verbose = vage_verbose
+
         # Initialize LLM client for answering
         self._client = None
         if self.use_real_llm_for_answer:
             self._init_client()
+
+        # Initialize reranker if enabled
+        self._reranker = None
+        if self.use_reranker:
+            self._init_reranker()
 
         # Will be initialized in reset()
         self._canvas: Optional[Canvas] = None
@@ -115,11 +162,29 @@ class CogCanvasAgent(Agent):
         except ImportError:
             pass
 
+    def _init_reranker(self):
+        """Initialize reranker."""
+        try:
+            import os
+
+            # Try to initialize with API, fall back to mock if not available
+            api_key = os.getenv("EMBEDDING_API_KEY")
+            if api_key:
+                self._reranker = Reranker(use_mock=False)
+            else:
+                self._reranker = Reranker(use_mock=True)
+        except Exception as e:
+            print(f"Failed to initialize reranker: {e}, using mock reranker")
+            self._reranker = Reranker(use_mock=True)
+
     @property
     def name(self) -> str:
         parts = []
         if self.enable_graph_expansion:
-            parts.append("Graph")
+            if self.graph_hops > 1:
+                parts.append(f"Graph{self.graph_hops}hop")
+            else:
+                parts.append("Graph")
         if self.enable_temporal_heuristic:
             parts.append("Time")
         if self.retrieval_method == "hybrid":
@@ -128,6 +193,8 @@ class CogCanvasAgent(Agent):
             parts.append("CoT")
         if self.use_llm_filter:
             parts.append("Filter")
+        if self.use_reranker:
+            parts.append("Rerank")
 
         config_str = "+".join(parts) if parts else "Baseline"
         return f"CogCanvas({config_str})"
@@ -138,6 +205,13 @@ class CogCanvasAgent(Agent):
             extractor_model=self.extractor_model,
             embedding_model=self.embedding_model,
             enable_temporal_heuristic=self.enable_temporal_heuristic,
+            reference_threshold=self.reference_threshold,
+            causal_threshold=self.causal_threshold,
+            enable_vage=self.enable_vage,
+            use_learned_vage=self.use_learned_vage,
+            vage_budget_k=self.vage_budget_k,
+            vage_mode=self.vage_mode,
+            vage_verbose=self.vage_verbose,
         )
         self._history = []
         self._retained_history = []
@@ -153,14 +227,14 @@ class CogCanvasAgent(Agent):
 
         # Extract canvas objects from this turn
         metadata = {"turn_id": turn.turn_id}
-        # Pass session_datetime if available
-        if hasattr(turn, "session_datetime") and turn.session_datetime:
-            metadata["session_datetime"] = turn.session_datetime
+        # Get session_datetime if available
+        session_datetime = getattr(turn, "session_datetime", None)
 
         self._canvas.extract(
             user=turn.user,
             assistant=turn.assistant,
             metadata=metadata,
+            session_datetime=session_datetime,  # Pass as separate parameter for temporal resolution
         )
 
     def on_compression(self, retained_turns: List[ConversationTurn]) -> None:
@@ -202,6 +276,16 @@ class CogCanvasAgent(Agent):
                 include_related=self.enable_graph_expansion,
             )
 
+        # Step 1.5: Apply N-hop graph expansion if needed (for hops > 1)
+        if self.enable_graph_expansion and self.graph_hops > 1:
+            retrieval_result = self._apply_multihop_expansion(
+                retrieval_result, question
+            )
+
+        # Step 1.6: Apply reranking if enabled
+        if self.use_reranker and self._reranker and len(retrieval_result.objects) > 0:
+            retrieval_result = self._apply_reranking(retrieval_result, question)
+
         # Step 2: Build context from retrieved objects
         # Increased from 800 to 2000 for better recall with larger top_k
         canvas_context = self._canvas.inject(
@@ -223,10 +307,120 @@ class CogCanvasAgent(Agent):
             metadata={
                 "num_objects_retrieved": len(retrieval_result.objects),
                 "graph_expansion": self.enable_graph_expansion,
+                "graph_hops": self.graph_hops if self.enable_graph_expansion else 0,
+                "reranking_applied": self.use_reranker,
                 "retrieval_scores": (
                     retrieval_result.scores[:3] if retrieval_result.scores else []
                 ),
             },
+        )
+
+    def _apply_multihop_expansion(self, retrieval_result, query: str):
+        """
+        Apply N-hop graph expansion to retrieval results.
+
+        Args:
+            retrieval_result: Initial retrieval result
+            query: The query string
+
+        Returns:
+            Updated RetrievalResult with expanded objects
+        """
+        from cogcanvas.models import RetrievalResult
+
+        # Get all expanded objects using N-hop traversal with BFS to track distances
+        expanded_objects = []
+        expanded_scores = []
+        seen_ids = set()
+
+        # Process each initial object
+        for obj, score in zip(retrieval_result.objects, retrieval_result.scores or []):
+            if obj.id not in seen_ids:
+                expanded_objects.append(obj)
+                expanded_scores.append(score)
+                seen_ids.add(obj.id)
+
+            # Perform BFS to get N-hop neighbors with distance tracking
+            visited = {obj.id}
+            current_level = [(obj.id, 0)]  # (node_id, distance)
+            hop_distances = {}  # Map node_id -> min_distance
+
+            # BFS traversal
+            while current_level:
+                next_level = []
+                for node_id, dist in current_level:
+                    if dist >= self.graph_hops:
+                        continue
+
+                    neighbors = self._canvas._graph.get_neighbors(
+                        node_id, direction="both"
+                    )
+                    for neighbor_id in neighbors:
+                        if neighbor_id not in visited:
+                            visited.add(neighbor_id)
+                            next_dist = dist + 1
+                            hop_distances[neighbor_id] = next_dist
+                            next_level.append((neighbor_id, next_dist))
+
+                current_level = next_level
+
+            # Add related objects with decayed scores based on hop distance
+            for related_id, hop_distance in hop_distances.items():
+                if related_id not in seen_ids:
+                    related_obj = self._canvas._objects.get(related_id)
+                    if related_obj:
+                        expanded_objects.append(related_obj)
+                        # Decay score based on hop distance: 0.8^hop
+                        decay_factor = 0.8**hop_distance
+                        expanded_scores.append(score * decay_factor)
+                        seen_ids.add(related_id)
+
+        return RetrievalResult(
+            objects=expanded_objects,
+            scores=expanded_scores,
+            query=query,
+            retrieval_time=retrieval_result.retrieval_time,
+        )
+
+    def _apply_reranking(self, retrieval_result, query: str):
+        """
+        Apply reranking to retrieval results.
+
+        Args:
+            retrieval_result: Retrieval result to rerank
+            query: The query string
+
+        Returns:
+            Reranked RetrievalResult
+        """
+        from cogcanvas.models import RetrievalResult
+
+        # Prepare documents for reranking (use content + quote)
+        documents = []
+        for obj in retrieval_result.objects:
+            doc_text = obj.content or ""
+            if obj.quote:
+                doc_text = f"{doc_text} | {obj.quote}"
+            documents.append(doc_text)
+
+        # Rerank
+        reranked_indices = self._reranker.rerank(
+            query=query, documents=documents, top_k=None  # Keep all, just reorder
+        )
+
+        # Reorder objects and scores based on reranking
+        reranked_objects = []
+        reranked_scores = []
+        for idx, rerank_score in reranked_indices:
+            reranked_objects.append(retrieval_result.objects[idx])
+            # Use reranking score
+            reranked_scores.append(rerank_score)
+
+        return RetrievalResult(
+            objects=reranked_objects,
+            scores=reranked_scores,
+            query=query,
+            retrieval_time=retrieval_result.retrieval_time,
         )
 
     def _extract_answer_from_context(
@@ -241,14 +435,58 @@ class CogCanvasAgent(Agent):
         # 1. Use LLM if enabled and available
         if self.use_real_llm_for_answer and self._client:
 
-            if self.prompt_style == "cot_v2":
-                # Enhanced Chain-of-Thought Prompt (V2 - Explicit Causal Reasoning)
-                prompt = f"""You are a causal reasoning agent. Your memory contains a knowledge graph with 5 types of nodes:
+            if self.prompt_style == "cot_fusion":
+                # Multi-Artifact Fusion Prompt - Connects related artifacts for complex reasoning
+                prompt = f"""You are a reasoning agent with access to a memory graph containing 8 types of nodes:
+
+**Task-oriented:**
 - DECISION: Choices made (e.g., "Use AWS")
 - KEY_FACT: Constraints/numbers (e.g., "Budget $500")
 - REMINDER: Rules/preferences
 - TODO: Action items
 - INSIGHT: Conclusions
+
+**Social/Personal:**
+- PERSON_ATTRIBUTE: Personal traits/status (e.g., "Caroline is a counselor")
+- EVENT: Activities with time (e.g., "Attended support group on May 7")
+- RELATIONSHIP: Interpersonal connections (e.g., "Caroline and Melanie are friends")
+
+## Retrieved Memory Nodes
+{canvas_context}
+
+## Question
+{question}
+
+## Multi-Artifact Fusion Protocol
+1. **IDENTIFY**: List ALL relevant artifacts from the memory
+2. **CONNECT**: Find relationships between artifacts:
+   - EVENT ↔ PERSON_ATTRIBUTE (who did what)
+   - RELATIONSHIP ↔ PERSON_ATTRIBUTE (who knows whom)
+   - DECISION ↔ KEY_FACT (why this choice)
+3. **CHAIN**: Build explicit reasoning: "Because [A], therefore [B]"
+4. **ANSWER**: Synthesize a complete answer
+
+## Response Format
+**Artifacts Used:**
+- [Type] Content
+
+**Reasoning Chain:**
+Because [Artifact 1] → [Artifact 2] → Therefore [Conclusion]
+
+**Answer:**
+[Direct answer]
+"""
+            elif self.prompt_style == "cot_v2":
+                # Enhanced Chain-of-Thought Prompt (V2 - Explicit Causal Reasoning)
+                prompt = f"""You are a causal reasoning agent. Your memory contains a knowledge graph with 8 types of nodes:
+- DECISION: Choices made (e.g., "Use AWS")
+- KEY_FACT: Constraints/numbers (e.g., "Budget $500")
+- REMINDER: Rules/preferences
+- TODO: Action items
+- INSIGHT: Conclusions
+- PERSON_ATTRIBUTE: Personal traits/status
+- EVENT: Activities with time
+- RELATIONSHIP: Interpersonal connections
 
 ## Retrieved Memory Nodes
 {canvas_context}
@@ -301,13 +539,13 @@ If the information is not available, say "I don't have enough information."
 Provide a concise, direct answer."""
 
             try:
-                response = self._client.chat.completions.create(
+                return call_llm_with_retry(
+                    client=self._client,
                     model=self.extractor_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=200,
                     temperature=0,
                 )
-                return response.choices[0].message.content
             except Exception as e:
                 print(f"LLM generation failed: {e}")
                 # Fallback to heuristic
@@ -331,3 +569,37 @@ Provide a concise, direct answer."""
         if not self._canvas:
             return {}
         return self._canvas.stats()
+
+    # =========================================================================
+    # Cache Support
+    # =========================================================================
+
+    def get_extraction_config(self) -> ExtractionConfig:
+        """Get the extraction config for this agent (used for cache key)."""
+        return ExtractionConfig(
+            extractor_model=self.extractor_model,
+            embedding_model=self.embedding_model,
+            enable_temporal_heuristic=self.enable_temporal_heuristic,
+            reference_threshold=self.reference_threshold,
+            causal_threshold=self.causal_threshold,
+            enable_vage=self.enable_vage,
+            use_learned_vage=self.use_learned_vage,
+            vage_budget_k=self.vage_budget_k,
+            vage_mode=self.vage_mode,
+        )
+
+    def get_canvas_state(self) -> dict:
+        """Get current canvas state for caching."""
+        if not self._canvas:
+            return {}
+        return get_canvas_state_dict(self._canvas)
+
+    def restore_from_cache(self, canvas_state: dict) -> None:
+        """
+        Restore canvas state from cache.
+
+        This skips the extraction phase and directly loads cached objects/graph.
+        """
+        if not self._canvas:
+            self.reset()
+        restore_canvas_state(self._canvas, canvas_state)

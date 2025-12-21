@@ -429,7 +429,9 @@ basic_search:
         )
 
     def _generate_answer(self, context: str, question: str) -> str:
-        """Generate answer via LLM."""
+        """Generate answer via LLM with infinite retry."""
+        from experiments.llm_utils import call_llm_with_retry
+
         try:
             from openai import OpenAI
 
@@ -449,13 +451,13 @@ If the information is not available, say "I don't have enough information."
 ## Answer
 Provide a concise, direct answer based on the context."""
 
-            response = client.chat.completions.create(
+            return call_llm_with_retry(
+                client=client,
                 model=self.config.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
             )
-            return response.choices[0].message.content
 
         except Exception as e:
             return f"Error: {e}"

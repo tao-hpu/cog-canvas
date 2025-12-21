@@ -15,8 +15,8 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # Lazy-initialized OpenAI client
 _client = None
 
-# Chat model for response generation (use MODEL_WEAK_2 for faster responses)
-CHAT_MODEL = os.environ.get("MODEL_WEAK_2", "gpt-4o-mini")
+# Chat model for response generation (use MODEL_DEFAULT for faster responses)
+CHAT_MODEL = os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
 
 
 def get_openai_client():
@@ -24,6 +24,7 @@ def get_openai_client():
     global _client
     if _client is None:
         from openai import OpenAI
+
         # Use API_KEY from .env (compatible with OpenAI API format)
         api_key = os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY")
         api_base = os.environ.get("API_BASE") or os.environ.get("OPENAI_API_BASE")
@@ -39,9 +40,7 @@ def get_openai_client():
 
 
 async def generate_chat_stream(
-    user_message: str,
-    session_id: str,
-    cogcanvas_enabled: bool = True
+    user_message: str, session_id: str, cogcanvas_enabled: bool = True
 ) -> AsyncGenerator[str, None]:
     """
     Generate streaming chat response with SSE events using real LLM.
@@ -68,7 +67,7 @@ async def generate_chat_stream(
                 query=user_message,
                 top_k=5,
                 method="semantic",
-                include_related=False  # Strict top-k limit to prevent result explosion
+                include_related=False,  # Strict top-k limit to prevent result explosion
             )
 
             if retrieval_result.objects:
@@ -77,7 +76,7 @@ async def generate_chat_stream(
                     result=retrieval_result,
                     format="markdown",
                     max_tokens=500,  # Token budget for context
-                    strategy="relevance"
+                    strategy="relevance",
                 )
 
         # Build messages for LLM
@@ -99,11 +98,13 @@ When noting important facts or TODOs, state them clearly."""
                 CanvasObjectResponse.from_canvas_object(obj).model_dump()
                 for obj in retrieval_result.objects
             ]
-            yield json.dumps({
-                "type": "retrieval",
-                "objects": retrieved_objs,
-                "count": len(retrieved_objs)
-            }) + "\n"
+            yield json.dumps(
+                {
+                    "type": "retrieval",
+                    "objects": retrieved_objs,
+                    "count": len(retrieved_objs),
+                }
+            ) + "\n"
 
         # Step 3: Stream response from LLM
         full_response = ""
@@ -121,63 +122,59 @@ When noting important facts or TODOs, state them clearly."""
             if chunk.choices and chunk.choices[0].delta.content:
                 token = chunk.choices[0].delta.content
                 full_response += token
-                yield json.dumps({
-                    "type": "token",
-                    "content": token
-                }) + "\n"
+                yield json.dumps({"type": "token", "content": token}) + "\n"
                 await asyncio.sleep(0.02)  # Small delay for smoother UI streaming
 
         # Step 4: Extract canvas objects from this turn
         if cogcanvas_enabled:
             # Signal extraction start - yield and flush immediately
-            yield json.dumps({
-                "type": "extracting",
-            }) + "\n"
+            yield json.dumps(
+                {
+                    "type": "extracting",
+                }
+            ) + "\n"
             await asyncio.sleep(0)  # Force flush to client
 
             extraction_result = canvas.extract(
-                user=user_message,
-                assistant=full_response
+                user=user_message, assistant=full_response
             )
 
             if extraction_result.objects:
                 # Step 5: Auto-link objects based on semantic similarity
                 try:
-                    canvas.auto_link(
-                        reference_threshold=0.7,
-                        causal_threshold=0.6
-                    )
+                    canvas.auto_link(reference_threshold=0.7, causal_threshold=0.6)
                 except Exception as link_error:
                     print(f"Auto-link warning: {link_error}")
 
                 # Step 6: Return extracted objects (with updated relations)
                 # Re-fetch objects to get updated relations
-                updated_objects = [canvas.get(obj.id) for obj in extraction_result.objects]
+                updated_objects = [
+                    canvas.get(obj.id) for obj in extraction_result.objects
+                ]
                 extracted_objs = [
                     CanvasObjectResponse.from_canvas_object(obj).model_dump()
-                    for obj in updated_objects if obj
+                    for obj in updated_objects
+                    if obj
                 ]
-                yield json.dumps({
-                    "type": "extraction",
-                    "objects": extracted_objs,
-                    "count": len(extracted_objs)
-                }) + "\n"
+                yield json.dumps(
+                    {
+                        "type": "extraction",
+                        "objects": extracted_objs,
+                        "count": len(extracted_objs),
+                    }
+                ) + "\n"
 
         # Signal complete (after extraction if enabled)
-        yield json.dumps({
-            "type": "done",
-            "content": full_response
-        }) + "\n"
+        yield json.dumps({"type": "done", "content": full_response}) + "\n"
 
     except Exception as e:
         import traceback
+
         error_detail = traceback.format_exc()
         print(f"Chat error: {error_detail}")
-        yield json.dumps({
-            "type": "error",
-            "error": str(e),
-            "detail": error_detail
-        }) + "\n"
+        yield json.dumps(
+            {"type": "error", "error": str(e), "detail": error_detail}
+        ) + "\n"
 
 
 @router.post("")
@@ -195,7 +192,11 @@ async def chat_stream(request: ChatRequest):
         generate_chat_stream(
             user_message=request.message,
             session_id=request.session_id or "default",
-            cogcanvas_enabled=request.cogcanvas_enabled if request.cogcanvas_enabled is not None else True
+            cogcanvas_enabled=(
+                request.cogcanvas_enabled
+                if request.cogcanvas_enabled is not None
+                else True
+            ),
         )
     )
 
@@ -213,15 +214,11 @@ async def chat_simple(request: ChatRequest):
     context_prompt = ""
     if canvas.size > 0:
         retrieval_result = canvas.retrieve(
-            query=request.message,
-            top_k=5,
-            method="semantic"
+            query=request.message, top_k=5, method="semantic"
         )
         if retrieval_result.objects:
             context_prompt = canvas.inject(
-                result=retrieval_result,
-                format="markdown",
-                max_tokens=500
+                result=retrieval_result, format="markdown", max_tokens=500
             )
 
     # Build messages
@@ -247,8 +244,7 @@ async def chat_simple(request: ChatRequest):
 
     # Extract objects
     extraction_result = canvas.extract(
-        user=request.message,
-        assistant=assistant_response
+        user=request.message, assistant=assistant_response
     )
 
     extracted_objs = None
@@ -261,5 +257,5 @@ async def chat_simple(request: ChatRequest):
     return {
         "role": "assistant",
         "content": assistant_response,
-        "extracted_objects": extracted_objs
+        "extracted_objects": extracted_objs,
     }
