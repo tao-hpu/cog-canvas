@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any, Union, Literal, Tuple
 import json
 import time
 from pathlib import Path
+from rank_bm25 import BM25Okapi
 
 from cogcanvas.models import (
     CanvasObject,
@@ -249,7 +250,12 @@ class Canvas:
 
         # Compute embeddings for extracted objects
         if objects:
-            texts = [obj.content for obj in objects]
+            # ENHANCED EMBEDDING: Include quote in embedding to match RAG's recall capabilities
+            # This improves retrieval of specific keywords/phrases present in the original text
+            texts = [
+                f"{obj.content} {obj.quote}" if obj.quote else obj.content
+                for obj in objects
+            ]
             embeddings = self._embedding_backend.embed_batch(texts)
             for obj, embedding in zip(objects, embeddings):
                 obj.embedding = embedding
@@ -385,27 +391,33 @@ class Canvas:
         query: str,
         top_k: int = 5,
         obj_type: Optional[ObjectType] = None,
-        method: Literal["semantic", "keyword", "hybrid"] = "semantic",
+        method: Literal["semantic", "bm25", "hybrid"] = "hybrid",
         include_related: bool = False,
+        max_hops: int = 5,
     ) -> RetrievalResult:
         """
         Retrieve relevant canvas objects for a query.
 
-        ENHANCED (Paper v2): Implements Hybrid Retrieval (Semantic + Keyword Fusion).
-        Even when method='semantic', we now incorporate keyword signals to improve
-        recall for specific entities (e.g., "AWS", "PostgreSQL") that might have
-        low semantic overlap with the query context.
+        ENHANCED (Paper v3): Implements Hybrid Retrieval (BM25 + Semantic Fusion).
+        This addresses semantic gap issues where vector similarity fails for
+        entity queries (e.g., "country" query vs "Nuuk" mention).
 
-        Fusion Logic:
-        - Base: 0.7 * Semantic + 0.3 * Keyword
-        - Boost: If Keyword > 0.5 (strong match), use max(Semantic, Keyword)
+        Fusion Logic (Two-Way):
+        - Base: 0.7 * Semantic + 0.3 * BM25
+        - BM25 handles exact keyword matching (entities, places, names)
+        - Semantic handles contextual understanding
+
+        Graph Expansion:
+        - Optionally expand to N-hop neighbors (default: 5 hops)
+        - Score decay: score * (0.8 ^ hop_distance)
 
         Args:
             query: The search query
             top_k: Maximum number of objects to return
             obj_type: Filter by object type (optional)
-            method: Retrieval method ("semantic", "keyword", or "hybrid")
-            include_related: If True, include 1-hop related objects
+            method: Retrieval method ("semantic", "bm25", or "hybrid")
+            include_related: If True, include N-hop graph neighbors
+            max_hops: Maximum graph expansion hops (default: 5)
 
         Returns:
             RetrievalResult with matching objects and scores
@@ -418,34 +430,31 @@ class Canvas:
             candidates = [obj for obj in candidates if obj.type == obj_type]
 
         # 1. Compute scores based on method
-        if method == "keyword":
-            # Pure keyword
-            scored = self._keyword_retrieve(query, candidates)
+        if method == "bm25":
+            # Pure BM25
+            scored = self._bm25_retrieve(query, candidates)
+        elif method == "semantic":
+            # Pure semantic
+            scored = self._semantic_retrieve(query, candidates)
         else:
-            # Hybrid / Semantic (we upgrade 'semantic' to hybrid silently for better performance)
+            # Hybrid (default): BM25 + Semantic fusion
             semantic_list = self._semantic_retrieve(query, candidates)
-            keyword_list = self._keyword_retrieve(query, candidates)
+            bm25_list = self._bm25_retrieve(query, candidates)
 
-            # Convert to dict for O(1) lookup. Object hash is its ID usually, but here we use object instance.
-            # Assuming CanvasObject is hashable (it is dataclass with frozen=False but eq=True default).
-            # To be safe, map by ID.
+            # Convert to dict for O(1) lookup
             semantic_map = {obj.id: score for obj, score in semantic_list}
-            keyword_map = {obj.id: score for obj, score in keyword_list}
+            bm25_map = {obj.id: score for obj, score in bm25_list}
 
             scored = []
-            ALPHA = 0.7
+            SEMANTIC_WEIGHT = 0.7
+            BM25_WEIGHT = 0.3
 
             for obj in candidates:
                 s_score = semantic_map.get(obj.id, 0.0)
-                k_score = keyword_map.get(obj.id, 0.0)
+                b_score = bm25_map.get(obj.id, 0.0)
 
-                # Fusion Logic
-                if k_score > 0.5:
-                    # Strong keyword match (e.g. exact entity mention) -> Trust it
-                    final_score = max(s_score, k_score)
-                else:
-                    # Weak/No keyword match -> Rely mostly on semantic
-                    final_score = (ALPHA * s_score) + ((1 - ALPHA) * k_score)
+                # Simple weighted fusion
+                final_score = (SEMANTIC_WEIGHT * s_score) + (BM25_WEIGHT * b_score)
 
                 if final_score > 0:
                     scored.append((obj, final_score))
@@ -455,25 +464,39 @@ class Canvas:
         top_objects = [obj for obj, _ in scored[:top_k]]
         top_scores = [score for _, score in scored[:top_k]]
 
-        # If include_related is True, add 1-hop neighbors
-        if include_related:
+        # If include_related is True, add N-hop neighbors with exponential decay
+        if include_related and max_hops > 0:
             related_objects = []
             related_scores = []
-            for obj, score in zip(top_objects, top_scores):
-                # Get related object IDs from graph
-                related_ids = self._graph.get_neighbors(obj.id, direction="both")
-                # Add related objects with slightly lower scores
-                for related_id in related_ids:
-                    related_obj = self._objects.get(related_id)
-                    # Avoid duplicates
-                    if (
-                        related_obj
-                        and related_obj not in top_objects
-                        and related_obj not in related_objects
-                    ):
-                        related_objects.append(related_obj)
-                        # Decay factor for related nodes
-                        related_scores.append(score * 0.8)
+
+            # BFS to explore N-hop neighbors
+            visited = set(obj.id for obj in top_objects)
+            current_layer = [(obj, score, 0) for obj, score in zip(top_objects, top_scores)]
+
+            while current_layer:
+                next_layer = []
+                for obj, score, hop in current_layer:
+                    if hop >= max_hops:
+                        continue
+
+                    # Get neighbors
+                    neighbor_ids = self._graph.get_neighbors(obj.id, direction="both")
+                    for neighbor_id in neighbor_ids:
+                        if neighbor_id in visited:
+                            continue
+
+                        neighbor_obj = self._objects.get(neighbor_id)
+                        if not neighbor_obj:
+                            continue
+
+                        visited.add(neighbor_id)
+                        # Exponential decay: score * (0.8 ^ hop_distance)
+                        decayed_score = score * (0.8 ** (hop + 1))
+                        related_objects.append(neighbor_obj)
+                        related_scores.append(decayed_score)
+                        next_layer.append((neighbor_obj, decayed_score, hop + 1))
+
+                current_layer = next_layer
 
             # Combine main and related results
             top_objects.extend(related_objects)
@@ -1373,115 +1396,6 @@ class Canvas:
 
         return objects
 
-    def _simple_match_score(self, query: str, content: str) -> float:
-        """Simple keyword matching score with stopword filtering and punctuation removal."""
-        import string
-
-        STOPWORDS = {
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "but",
-            "if",
-            "then",
-            "else",
-            "when",
-            "at",
-            "by",
-            "for",
-            "from",
-            "in",
-            "of",
-            "on",
-            "to",
-            "with",
-            "is",
-            "are",
-            "was",
-            "were",
-            "be",
-            "been",
-            "being",
-            "have",
-            "has",
-            "had",
-            "do",
-            "does",
-            "did",
-            "i",
-            "you",
-            "he",
-            "she",
-            "it",
-            "we",
-            "they",
-            "my",
-            "your",
-            "his",
-            "her",
-            "its",
-            "our",
-            "their",
-            "what",
-            "which",
-            "who",
-            "whom",
-            "whose",
-            "why",
-            "how",
-            "where",
-            "this",
-            "that",
-            "these",
-            "those",
-            "can",
-            "could",
-            "will",
-            "would",
-            "shall",
-            "should",
-            "may",
-            "might",
-            "must",
-        }
-
-        def clean_tokenize(text: str) -> set:
-            # Remove punctuation
-            text = text.translate(str.maketrans("", "", string.punctuation))
-            return {w for w in text.lower().split() if w not in STOPWORDS}
-
-        query_words = clean_tokenize(query)
-        content_words = clean_tokenize(content)
-
-        if not query_words:
-            return 0.0
-
-        overlap = query_words & content_words
-        return len(overlap) / len(query_words)
-
-    def _keyword_retrieve(
-        self, query: str, candidates: List[CanvasObject]
-    ) -> List[Tuple[CanvasObject, float]]:
-        """
-        Retrieve objects using keyword matching.
-
-        Args:
-            query: Search query
-            candidates: List of candidate objects to search
-
-        Returns:
-            List of (object, score) tuples
-        """
-        scored = []
-        query_lower = query.lower()
-        for obj in candidates:
-            score = self._simple_match_score(query_lower, obj.content.lower())
-            if score > 0:
-                scored.append((obj, score))
-        return scored
-
     def _semantic_retrieve(
         self, query: str, candidates: List[CanvasObject]
     ) -> List[Tuple[CanvasObject, float]]:
@@ -1519,6 +1433,68 @@ class Canvas:
         # Pair objects with scores
         scored = [
             (obj, float(score)) for obj, score in zip(candidate_objs, similarities)
+        ]
+
+        return scored
+
+    def _bm25_retrieve(
+        self, query: str, candidates: List[CanvasObject]
+    ) -> List[Tuple[CanvasObject, float]]:
+        """
+        Retrieve objects using BM25 ranking.
+
+        BM25 is a probabilistic retrieval function that ranks documents based on
+        term frequency, inverse document frequency, and document length normalization.
+        It's particularly effective for exact keyword matching and entity retrieval.
+
+        Formula: BM25(q,d) = Σ IDF(qi) * (f(qi,d) * (k1+1)) / (f(qi,d) + k1*(1-b+b*|d|/avgdl))
+
+        Args:
+            query: Search query
+            candidates: List of candidate objects to search
+
+        Returns:
+            List of (object, score) tuples sorted by BM25 score
+        """
+        if not candidates:
+            return []
+
+        # Tokenize documents (content + quote for better coverage)
+        import string
+
+        def tokenize(text: str) -> List[str]:
+            """Simple tokenization with punctuation removal."""
+            text = text.translate(str.maketrans("", "", string.punctuation))
+            return text.lower().split()
+
+        # Build corpus from candidates
+        corpus = []
+        for obj in candidates:
+            # Combine content and quote (if available) for richer text representation
+            text = obj.content
+            if obj.quote:
+                text = f"{obj.content} {obj.quote}"
+            corpus.append(tokenize(text))
+
+        # Initialize BM25
+        bm25 = BM25Okapi(corpus)
+
+        # Tokenize query
+        query_tokens = tokenize(query)
+
+        # Get BM25 scores
+        scores = bm25.get_scores(query_tokens)
+
+        # Normalize scores to [0, 1] range for consistency with other methods
+        if len(scores) > 0 and max(scores) > 0:
+            max_score = max(scores)
+            scores = [s / max_score for s in scores]
+
+        # Pair objects with scores and filter out zero scores
+        scored = [
+            (obj, float(score))
+            for obj, score in zip(candidates, scores)
+            if score > 0
         ]
 
         return scored

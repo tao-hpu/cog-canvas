@@ -296,18 +296,21 @@ class ExperimentRunner:
         dataset: EvaluationDataset,
         compression_turn: int = 40,
         retain_recent: int = 5,
+        rolling_interval: int = 0,
     ):
         """
         Initialize the experiment runner.
 
         Args:
             dataset: The evaluation dataset to use
-            compression_turn: Turn at which to simulate compression
+            compression_turn: Turn at which to simulate compression (for single compression)
             retain_recent: Number of recent turns to retain after compression
+            rolling_interval: Interval for rolling compression (0 to disable)
         """
         self.dataset = dataset
         self.compression_turn = compression_turn
         self.retain_recent = retain_recent
+        self.rolling_interval = rolling_interval
 
     def run(
         self,
@@ -339,7 +342,11 @@ class ExperimentRunner:
             print(f"\n{'='*60}")
             print(f"Running experiment with {agent.name}")
             print(f"Conversations: {len(conversations)}")
-            print(f"Compression at turn {self.compression_turn}, retain {self.retain_recent} turns")
+            if self.rolling_interval > 0:
+                print(f"Strategy: Rolling Compression (interval={self.rolling_interval})")
+            else:
+                print(f"Strategy: Single Compression (at turn {self.compression_turn})")
+            print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
             print(f"{'='*60}\n")
 
@@ -370,6 +377,7 @@ class ExperimentRunner:
             config={
                 "compression_turn": self.compression_turn,
                 "retain_recent": self.retain_recent,
+                "rolling_interval": self.rolling_interval,
                 "num_samples": num_samples or len(self.dataset.conversations),
             },
             timestamp=datetime.now().isoformat(),
@@ -434,52 +442,87 @@ class ExperimentRunner:
         agent.reset()
 
         total_extraction_time = 0.0
-        num_turns_to_process = min(len(conv.turns), self.compression_turn)
+        
+        is_rolling = self.rolling_interval > 0
 
-        # Phase 1: Process turns up to compression point
-        if verbose:
-            print(f"\n    Phase 1: Processing {num_turns_to_process} turns...", end="", flush=True)
-
-        for i, turn in enumerate(conv.turns):
-            if turn.turn_id <= self.compression_turn:
+        if is_rolling:
+            # === ROLLING COMPRESSION STRATEGY ===
+            if verbose:
+                print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
+            
+            current_buffer = []
+            
+            for i, turn in enumerate(conv.turns):
                 start = time.time()
                 agent.process_turn(turn)
                 elapsed = (time.time() - start) * 1000
                 total_extraction_time += elapsed
+                
+                current_buffer.append(turn)
+                
+                # Check for compression trigger
+                if (i + 1) % self.rolling_interval == 0:
+                    retained_turns = current_buffer[-self.retain_recent:]
+                    agent.on_compression(retained_turns)
+                    
+                    # Update buffer
+                    current_buffer = list(retained_turns)
+                    
+                    if verbose:
+                         print(f"      [Rolling] Compressed at turn {turn.turn_id}")
 
-                # Progress indicator every 10 turns
-                if verbose and (i + 1) % 10 == 0:
-                    print(f" {i+1}", end="", flush=True)
+            # Final compression (optional, but good for consistency before QA)
+            retained_turns = current_buffer[-self.retain_recent:]
+            agent.on_compression(retained_turns)
 
-        if verbose:
-            print(f" done ({total_extraction_time:.0f}ms)")
+        else:
+            # === SINGLE COMPRESSION STRATEGY ===
+            num_turns_to_process = min(len(conv.turns), self.compression_turn)
 
-        # Phase 2: Simulate compression
-        if verbose:
-            print(f"    Phase 2: Compression (keeping last {self.retain_recent} turns)...", end="", flush=True)
+            # Phase 1: Process turns up to compression point
+            if verbose:
+                print(f"\n    Phase 1: Processing {num_turns_to_process} turns...", end="", flush=True)
 
-        retained_turns = [
-            t for t in conv.turns
-            if t.turn_id > self.compression_turn - self.retain_recent
-            and t.turn_id <= self.compression_turn
-        ]
-        agent.on_compression(retained_turns)
+            for i, turn in enumerate(conv.turns):
+                if turn.turn_id <= self.compression_turn:
+                    start = time.time()
+                    agent.process_turn(turn)
+                    elapsed = (time.time() - start) * 1000
+                    total_extraction_time += elapsed
 
-        if verbose:
-            print(" done")
+                    # Progress indicator every 10 turns
+                    if verbose and (i + 1) % 10 == 0:
+                        print(f" {i+1}", end="", flush=True)
 
-        # Phase 3: Process remaining turns (if any beyond compression)
-        remaining_turns = [t for t in conv.turns if t.turn_id > self.compression_turn]
-        if remaining_turns and verbose:
-            print(f"    Phase 3: Processing {len(remaining_turns)} post-compression turns...", end="", flush=True)
+            if verbose:
+                print(f" done ({total_extraction_time:.0f}ms)")
 
-        for turn in remaining_turns:
-            start = time.time()
-            agent.process_turn(turn)
-            total_extraction_time += (time.time() - start) * 1000
+            # Phase 2: Simulate compression
+            if verbose:
+                print(f"    Phase 2: Compression (keeping last {self.retain_recent} turns)...", end="", flush=True)
 
-        if remaining_turns and verbose:
-            print(" done")
+            retained_turns = [
+                t for t in conv.turns
+                if t.turn_id > self.compression_turn - self.retain_recent
+                and t.turn_id <= self.compression_turn
+            ]
+            agent.on_compression(retained_turns)
+
+            if verbose:
+                print(" done")
+
+            # Phase 3: Process remaining turns (if any beyond compression)
+            remaining_turns = [t for t in conv.turns if t.turn_id > self.compression_turn]
+            if remaining_turns and verbose:
+                print(f"    Phase 3: Processing {len(remaining_turns)} post-compression turns...", end="", flush=True)
+
+            for turn in remaining_turns:
+                start = time.time()
+                agent.process_turn(turn)
+                total_extraction_time += (time.time() - start) * 1000
+
+            if remaining_turns and verbose:
+                print(" done")
 
         # Phase 4: Ask recall questions
         if verbose:
@@ -512,7 +555,7 @@ class ExperimentRunner:
             conversation_id=conv.id,
             fact_results=fact_results,
             total_extraction_time_ms=total_extraction_time,
-            compression_turn=self.compression_turn,
+            compression_turn=self.compression_turn if not is_rolling else len(conv.turns),
         )
 
 
@@ -557,6 +600,12 @@ def main():
         type=int,
         default=5,
         help="Number of recent turns to retain after compression",
+    )
+    parser.add_argument(
+        "--rolling-interval",
+        type=int,
+        default=0,
+        help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
     )
     parser.add_argument(
         "--max-workers",
@@ -615,6 +664,7 @@ def main():
         dataset=dataset,
         compression_turn=args.compression_turn,
         retain_recent=args.retain_recent,
+        rolling_interval=args.rolling_interval,
     )
 
     result = runner.run(

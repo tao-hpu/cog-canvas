@@ -7,7 +7,7 @@ for extracting canvas objects from dialogue.
 
 import os
 from cogcanvas import Canvas
-from cogcanvas.llm import get_backend, OpenAIBackend, AnthropicBackend, MockLLMBackend
+from cogcanvas.llm import get_backend, OpenAIBackend, MockLLMBackend
 
 
 def demo_mock_backend():
@@ -65,37 +65,7 @@ def demo_openai_backend():
         print(f"Error: {e}")
 
 
-def demo_anthropic_backend():
-    """Demo using Anthropic backend (requires ANTHROPIC_API_KEY)."""
-    print("\n" + "=" * 70)
-    print("DEMO: Anthropic Backend (Claude 3.5 Haiku)")
-    print("=" * 70)
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        print("Skipping - ANTHROPIC_API_KEY not set")
-        return
-
-    try:
-        backend = AnthropicBackend(model="claude-3-5-haiku-latest")
-        canvas = Canvas(llm_backend=backend)
-
-        # Test conversation
-        result = canvas.extract(
-            user="Should we go with microservices or monolith? The team is small, only 3 developers.",
-            assistant="Given the small team size, I'd recommend starting with a monolith. It's simpler to maintain and deploy.",
-        )
-
-        print(f"\nExtracted {len(result.objects)} objects:")
-        for obj in result.objects:
-            print(f"  [{obj.type.value}] {obj.content}")
-            print(f"    Context: {obj.context}")
-            print(f"    Confidence: {obj.confidence}")
-
-        print(f"\nExtraction took: {result.extraction_time:.3f}s")
-        print(f"Model used: {result.model_used}")
-
-    except Exception as e:
-        print(f"Error: {e}")
 
 
 def demo_factory_function():
@@ -113,9 +83,7 @@ def demo_factory_function():
     if os.getenv("OPENAI_API_KEY"):
         backends["openai"] = get_backend("openai", model="gpt-4o-mini")
 
-    # Add Anthropic if key available
-    if os.getenv("ANTHROPIC_API_KEY"):
-        backends["anthropic"] = get_backend("anthropic", model="claude-3-5-haiku-latest")
+
 
     print(f"\nAvailable backends: {list(backends.keys())}")
 
@@ -152,8 +120,7 @@ def demo_comparison():
     if os.getenv("OPENAI_API_KEY"):
         backends["openai"] = get_backend("openai", model="gpt-4o-mini")
 
-    if os.getenv("ANTHROPIC_API_KEY"):
-        backends["anthropic"] = get_backend("anthropic", model="claude-3-5-haiku-latest")
+
 
     for i, case in enumerate(test_cases, 1):
         print(f"\n--- Test Case {i} ---")
@@ -176,7 +143,6 @@ if __name__ == "__main__":
     # Run demos
     demo_mock_backend()
     demo_openai_backend()
-    demo_anthropic_backend()
     demo_factory_function()
     demo_comparison()
 

@@ -33,16 +33,7 @@ from experiments.durecdial_adapter import (
     LoCoMoConversation, # We reuse these data structures
     LoCoMoQAPair,
 )
-# We can reuse the result classes from runner_locomo if we import them, 
-# or just redefine them here to keep it self-contained. 
-# For simplicity and to avoid circular deps if any, I'll redefine the scoring/result classes 
-# or better yet, import the generic ones if they existed. 
-# runner_locomo defined them inline. I will copy them.
-
-from experiments.extraction_cache import (
-    ExtractionCache,
-    ExtractionConfig,
-)
+# We can reuse the result classes from runner_locomo if we import them,
 
 # =============================================================================
 # Scoring (Copied from runner_locomo.py)
@@ -63,6 +54,20 @@ class LoCoMoScoreResult:
         return self.exact_match or self.keyword_overlap >= 0.6
 
 def extract_keywords(text: str) -> List[str]:
+    # Check if text contains Chinese characters
+    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in text)
+    
+    if has_chinese:
+        # Simple character-level tokenization for Chinese
+        # Remove punctuation and whitespace
+        clean_text = re.sub(r'[^\w\u4e00-\u9fff]', '', text)
+        # Return individual characters as keywords (or bigrams if preferred, but chars are safer for recall)
+        # Actually, for "剁椒鱼头", we want "剁","椒","鱼","头" to match? 
+        # Or just use the whole string as one keyword if it's short?
+        # Let's stick to simple character list for overlap calc, similar to ROUGE-1 char level
+        return list(clean_text)
+    
+    # English/Latin processing
     stop_words = {
         "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in", "is", "it", "its", "of", "on", "that", "the", "to", "was", "will", "with", "the", "this", "but", "they", "have", "had", "what", "when", "where", "who", "which", "why", "how",
     }
@@ -225,24 +230,22 @@ class DuRecDialExperimentRunner:
         compression_at_middle: bool = True,
         compression_turn: Optional[int] = None,
         retain_recent: int = 5,
-        cache_dir: Optional[str] = None,
-        use_cache: bool = False,
-        min_turns: int = 30,
+        min_turns: int = 10,
+        id_prefix: str = "drd",
+        rolling_interval: int = 40,  # Default to 40 for consistency with LoCoMo
     ):
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
         self.retain_recent = retain_recent
         self.min_turns = min_turns
-        self.conversations = self._load_dataset(dataset_path)
+        self.conversations = self._load_dataset(dataset_path, id_prefix)
+        self.rolling_interval = rolling_interval
 
-        self.use_cache = use_cache
-        self.cache_dir = cache_dir or "experiments/cache/extraction"
-        self._cache = ExtractionCache(self.cache_dir) if use_cache else None
-
-    def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
+    def _load_dataset(self, path: str, id_prefix: str) -> List[LoCoMoConversation]:
+        """Load and convert DuRecDial dataset."""
         print(f"Loading DuRecDial dataset from {path}...")
         raw_data = load_durecdial_file(path)
-        conversations = convert_durecdial_to_locomo(raw_data, min_turns=self.min_turns)
+        conversations = convert_durecdial_to_locomo(raw_data, min_turns=self.min_turns, id_prefix=id_prefix)
         print(f"Loaded {len(conversations)} conversations (min_turns={self.min_turns})")
         return conversations
 
@@ -255,20 +258,22 @@ class DuRecDialExperimentRunner:
         agent_factory: Optional[callable] = None,
         max_questions_per_conv: Optional[int] = None,
         categories: Optional[List[int]] = None,
+        language: str = "en",
     ) -> DuRecDialExperimentResult:
+        # ... (keep existing run logic until result creation)
         conversations = self.conversations
         if num_samples:
             conversations = conversations[:num_samples]
 
-        extraction_config = None
-        if self.use_cache and hasattr(agent, 'get_extraction_config'):
-            extraction_config = agent.get_extraction_config()
-
         if verbose >= 1:
             print(f"\n{'='*60}")
             print(f"DuRecDial Experiment: {agent.name}")
+            print(f"Language: {language}")
             print(f"Conversations: {len(conversations)}")
-            print(f"Compression: {'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'}")
+            if self.rolling_interval > 0:
+                print(f"Strategy: Rolling Compression (interval={self.rolling_interval})")
+            else:
+                print(f"Strategy: Single Compression ({'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'})")
             print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
             print(f"{'='*60}\n")
@@ -279,14 +284,14 @@ class DuRecDialExperimentRunner:
             if agent_factory is None:
                 raise ValueError("agent_factory is required for parallel execution")
             results = self._run_parallel(
-                conversations, agent_factory, max_workers, verbose, max_questions_per_conv, categories, extraction_config
+                conversations, agent_factory, max_workers, verbose, max_questions_per_conv, categories, language
             )
         else:
             for i, conv in enumerate(conversations):
                 if verbose >= 1:
                     print(f"[{i+1}/{len(conversations)}] Conversation {conv.id}")
                 result = self._run_single_conversation(
-                    agent, conv, verbose, max_questions_per_conv, categories, extraction_config
+                    agent, conv, verbose, max_questions_per_conv, categories, language
                 )
                 results.append(result)
                 if verbose >= 1:
@@ -296,11 +301,13 @@ class DuRecDialExperimentRunner:
             agent_name=agent.name,
             conversation_results=results,
             config={
+                "rolling_interval": self.rolling_interval,
                 "compression_at_middle": self.compression_at_middle,
                 "fixed_compression_turn": self.fixed_compression_turn,
                 "retain_recent": self.retain_recent,
                 "num_samples": num_samples or len(self.conversations),
                 "benchmark_type": "durecdial",
+                "language": language,
             },
             timestamp=datetime.now().isoformat(),
         )
@@ -321,39 +328,67 @@ class DuRecDialExperimentRunner:
         max_workers: int,
         verbose: int,
         max_questions_per_conv: Optional[int],
-        categories: Optional[List[int]],
-        extraction_config: Optional[ExtractionConfig],
+        categories: Optional[List[int]] = None,
+        language: str = "en",
     ) -> List[DuRecDialConversationResult]:
+        """Run conversations in parallel."""
         results = [None] * len(conversations)
         completed = [0]
         lock = threading.Lock()
 
-        def process_conv(idx: int, conv: LoCoMoConversation) -> Tuple[int, DuRecDialConversationResult]:
+        def process_conv(
+            idx: int, conv: LoCoMoConversation
+        ) -> Tuple[int, DuRecDialConversationResult]:
+            # In parallel mode, only use verbose >= 2 for per-question detail
             conv_verbose = verbose if verbose >= 2 else 0
             try:
                 agent = agent_factory()
+                if verbose >= 2:
+                    with lock:
+                        print(f"  [Starting] {conv.id} ({len(conv.turns)} turns, {len(conv.qa_pairs)} questions)")
                 result = self._run_single_conversation(
-                    agent, conv, verbose=conv_verbose, max_questions=max_questions_per_conv, categories=categories, extraction_config=extraction_config
+                    agent, conv, verbose=conv_verbose, max_questions=max_questions_per_conv,
+                    categories=categories, language=language
                 )
             except Exception as e:
-                print(f"Error in conversation {conv.id}: {e}")
+                print(f"Error in conversation {conv.id}: {e}, skipping...")
                 import traceback
                 traceback.print_exc()
+                # Return empty result instead of crashing
                 result = DuRecDialConversationResult(
-                    conversation_id=conv.id, num_turns=len(conv.turns), compression_turn=0, question_results=[], total_time_ms=0
+                    conversation_id=conv.id,
+                    num_turns=len(conv.turns),
+                    compression_turn=0,
+                    question_results=[],
+                    total_time_ms=0,
                 )
 
             with lock:
                 completed[0] += 1
                 if verbose >= 1:
-                    print(f"[{completed[0]}/{len(conversations)}] {conv.id} => Accuracy: {result.accuracy:.0%}")
+                    # Show per-question breakdown at -vv
+                    detail = ""
+                    if verbose >= 2:
+                        passed = sum(1 for q in result.question_results if q.score.passed)
+                        total = len(result.question_results)
+                        detail = f" | Passed: {passed}/{total}"
+                    print(
+                        f"[{completed[0]}/{len(conversations)}] {conv.id} => "
+                        f"Accuracy: {result.accuracy:.0%}{detail}"
+                    )
+
             return idx, result
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_conv, i, conv): i for i, conv in enumerate(conversations)}
+            futures = {
+                executor.submit(process_conv, i, conv): i
+                for i, conv in enumerate(conversations)
+            }
+
             for future in as_completed(futures):
                 idx, result = future.result()
                 results[idx] = result
+
         return results
 
     def _run_single_conversation(
@@ -363,25 +398,47 @@ class DuRecDialExperimentRunner:
         verbose: int = 0,
         max_questions: Optional[int] = None,
         categories: Optional[List[int]] = None,
-        extraction_config: Optional[ExtractionConfig] = None,
+        language: str = "en",
     ) -> DuRecDialConversationResult:
         agent.reset()
         start_time = time.time()
         
-        # Compression
-        compression_turn = self.fixed_compression_turn or conv.get_compression_point()
-        compression_turn = min(compression_turn, len(conv.turns))
+        # Decide strategy
+        is_rolling = self.rolling_interval > 0
+        compression_turn = 0 # Placeholder for result
 
-        # Check cache
-        cache_hit = False
-        if self.use_cache and self._cache and extraction_config:
-            if self._cache.has(conv.id, extraction_config):
-                cached_state = self._cache.load(conv.id, extraction_config)
-                if cached_state and hasattr(agent, 'restore_from_cache'):
-                    agent.restore_from_cache(cached_state)
-                    cache_hit = True
+        # --- PROCESSING LOOP ---
+        current_buffer = [] 
+        
+        if is_rolling:
+            # === ROLLING COMPRESSION ===
+            if verbose >= 2:
+                print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
+            
+            for i, turn in enumerate(conv.turns):
+                agent.process_turn(turn)
+                current_buffer.append(turn)
+                
+                if (i + 1) % self.rolling_interval == 0:
+                    retained_turns = current_buffer[-self.retain_recent:]
+                    agent.on_compression(retained_turns)
+                    current_buffer = list(retained_turns)
+                    if verbose >= 3:
+                        print(f"      [Rolling] Compressed at turn {turn.turn_id}")
+            
+            # Final state setup
+            retained_turns = current_buffer[-self.retain_recent:]
+            agent.on_compression(retained_turns)
+            compression_turn = len(conv.turns)
 
-        if not cache_hit:
+        else:
+            # === SINGLE COMPRESSION (Legacy) ===
+            compression_turn = self.fixed_compression_turn or conv.get_compression_point()
+            compression_turn = min(compression_turn, len(conv.turns))
+
+            if verbose >= 2:
+                print(f"    Compression at turn {compression_turn}/{len(conv.turns)}")
+
             pre_turns = [t for t in conv.turns if t.turn_id <= compression_turn]
             for turn in pre_turns:
                 agent.process_turn(turn)
@@ -393,12 +450,22 @@ class DuRecDialExperimentRunner:
             for turn in post_turns:
                 agent.process_turn(turn)
 
-            if self.use_cache and self._cache and extraction_config and hasattr(agent, 'get_canvas_state'):
-                canvas_state = agent.get_canvas_state()
-                if canvas_state:
-                    self._cache.save(conv.id, extraction_config, canvas_state)
+        # --- QA PHASE ---
+        return self._run_qa_phase(
+            agent, conv, compression_turn, start_time, verbose, max_questions, categories, language
+        )
 
-        # Questions
+    def _run_qa_phase(
+        self,
+        agent: Agent,
+        conv: LoCoMoConversation,
+        compression_turn: int,
+        start_time: float,
+        verbose: int,
+        max_questions: Optional[int],
+        categories: Optional[List[int]],
+        language: str,
+    ) -> DuRecDialConversationResult:
         qa_pairs = conv.qa_pairs
         if categories:
             qa_pairs = [qa for qa in qa_pairs if qa.category in categories]
@@ -408,7 +475,12 @@ class DuRecDialExperimentRunner:
         question_results = []
         for qa in qa_pairs:
             q_start = time.time()
-            response = agent.answer_question(qa.question)
+            
+            question_text = qa.question
+            if language == "zh":
+                question_text += " (请用中文回答)"
+
+            response = agent.answer_question(question_text)
             latency = (time.time() - q_start) * 1000
             score = score_answer(response.answer, qa.answer)
             
@@ -440,64 +512,91 @@ class DuRecDialExperimentRunner:
 # =============================================================================
 
 def main():
+    # ... (imports)
     import argparse
     import os
     from dotenv import load_dotenv
 
-    # Load .env
-    project_root = Path(__file__).parent.parent.parent # Adjusted for cog-canvas/experiments/runner_durecdial.py if necessary?
-    # Wait, __file__ is experiments/runner_durecdial.py (inside cog-canvas root)
-    # So parent is experiments, parent.parent is cog-canvas
-    # The .env is in cog-canvas/
     load_dotenv(Path(__file__).parent.parent / ".env")
-
     os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY", "")
     os.environ["OPENAI_API_BASE"] = os.getenv("API_BASE", "")
 
     parser = argparse.ArgumentParser(description="Run DuRecDial evaluation")
+    # ... (existing args)
     parser.add_argument("--dataset", default="experiments/data/durecdial_sample.jsonl")
-    parser.add_argument("--agent", default="cogcanvas", help="Agent to evaluate (see runner_locomo.py for options)")
+    parser.add_argument("--agent", default="cogcanvas", help="Agent to evaluate")
     parser.add_argument("--samples", "-n", type=int, default=None)
     parser.add_argument("--output", "-o", default=None)
-    parser.add_argument("--min-turns", type=int, default=30)
+    parser.add_argument("--min-turns", type=int, default=10)
     parser.add_argument("--verbose", "-v", action="count", default=0)
     parser.add_argument("--workers", "-w", type=int, default=1)
+    parser.add_argument("--language", default="en", choices=["en", "zh"], help="Language for instructions (en/zh)")
+    parser.add_argument("--id-prefix", default="drd", help="Prefix for conversation IDs to match cache (default: drd)")
+    parser.add_argument("--categories", type=str, default=None)
+    parser.add_argument("--retain-recent", type=int, default=5)
     
-    # ... (Add other args similar to runner_locomo if needed) 
+    # NEW ARGUMENT
+    parser.add_argument(
+        "--rolling-interval",
+        type=int,
+        default=40,
+        help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
+    )
     
     args = parser.parse_args()
 
-    # Reuse agent factory logic from runner_locomo? 
-    # For now, let's just support basic 'cogcanvas' to test.
-    # In a real scenario, we'd copy the massive switch-case or import it.
-    
+    # ... (Agent initialization logic)
     agent = None
     agent_factory = None
     
-    # Quick dirty import of agent classes
     if args.agent == "cogcanvas":
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
+        # UPDATE CONFIG TO MATCH LOCOMO BEST PRACTICES
         config = {
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
             "retrieval_method": "hybrid",
             "prompt_style": "cot",
+            "retrieval_top_k": 20, # Updated
         }
         agent_factory = lambda: CogCanvasAgent(**config)
         agent = agent_factory()
+    # ... (other agents same as before)
     elif args.agent == "native":
          from experiments.agents.native_agent import NativeAgent
-         agent_factory = lambda: NativeAgent(retain_recent=5)
+         agent_factory = lambda: NativeAgent(retain_recent=args.retain_recent)
          agent = agent_factory()
+    elif args.agent == "summarization":
+        from experiments.agents.summarization_agent import SummarizationAgent
+        agent_factory = lambda: SummarizationAgent(retain_recent=args.retain_recent)
+        agent = agent_factory()
+    elif args.agent == "rag":
+        from experiments.agents.rag_agent import RagAgent
+        agent_factory = lambda: RagAgent(retain_recent=args.retain_recent)
+        agent = agent_factory()
+    elif args.agent == "memgpt-lite":
+        from experiments.agents.memgpt_lite_agent import MemGPTLiteAgent
+        agent_factory = lambda: MemGPTLiteAgent(core_memory_size=args.retain_recent)
+        agent = agent_factory()
+    elif args.agent == "graphrag":
+        from experiments.agents.graphrag_agent import create_graphrag_agent
+        agent_factory = lambda: create_graphrag_agent(search_method="local")
+        agent = agent_factory()
     else:
-        print(f"Warning: Agent {args.agent} not explicitly configured in this minimal runner. Using NativeAgent fallback.")
+        print(f"Warning: Agent {args.agent} not explicitly configured. Using NativeAgent fallback.")
         from experiments.agents.native_agent import NativeAgent
-        agent_factory = lambda: NativeAgent(retain_recent=5)
+        agent_factory = lambda: NativeAgent(retain_recent=args.retain_recent)
         agent = agent_factory()
 
+    categories = None
+    if args.categories:
+        categories = [int(c.strip()) for c in args.categories.split(",")]
+    
     runner = DuRecDialExperimentRunner(
         dataset_path=args.dataset,
-        min_turns=args.min_turns
+        min_turns=args.min_turns,
+        id_prefix=args.id_prefix,
+        rolling_interval=args.rolling_interval # Pass new arg
     )
     
     result = runner.run(
@@ -505,7 +604,9 @@ def main():
         num_samples=args.samples,
         verbose=args.verbose + 1,
         max_workers=args.workers,
-        agent_factory=agent_factory
+        agent_factory=agent_factory,
+        categories=categories,
+        language=args.language
     )
     
     if args.output:

@@ -19,13 +19,6 @@ from experiments.llm_utils import call_llm_with_retry
 from cogcanvas import Canvas
 from cogcanvas.models import ObjectType
 from cogcanvas.reranker import Reranker
-from experiments.extraction_cache import (
-    ExtractionCache,
-    ExtractionConfig,
-    get_canvas_state_dict,
-    restore_canvas_state,
-    get_extraction_config_for_agent,
-)
 
 
 class CogCanvasAgent(Agent):
@@ -53,6 +46,7 @@ class CogCanvasAgent(Agent):
         # Ablation Parameters
         enable_temporal_heuristic: bool = True,
         retrieval_method: str = "hybrid",  # "semantic", "keyword", "hybrid"
+        # We all are cot now
         prompt_style: str = "cot",  # "direct", "cot"
         # LLM Filtering Parameters
         use_llm_filter: bool = False,  # Enable LLM-based filtering (new feature)
@@ -253,12 +247,42 @@ class CogCanvasAgent(Agent):
     def answer_question(self, question: str) -> AgentResponse:
         """
         Answer a recall question using canvas objects + retained history.
+
+        Enhanced Two-Stage Retrieval:
+        1. Coarse retrieval: Get top-K candidates (20-50)
+        2. Fine-grained reranking: Rerank to top-N (5-10) using LLM or reranker
         """
         start_time = time.time()
 
         # Step 1: Retrieve relevant canvas objects
-        # Use two-stage retrieval with LLM filtering if enabled
-        if self.use_llm_filter:
+        # Two-stage retrieval if reranker is enabled
+        if self.use_reranker and self._reranker:
+            # Stage 1: Coarse retrieval with larger K
+            coarse_k = self.filter_candidate_k if self.use_llm_filter else max(20, self.retrieval_top_k * 2)
+            retrieval_result = self._canvas.retrieve(
+                query=question,
+                top_k=coarse_k,
+                method=self.retrieval_method,
+                include_related=self.enable_graph_expansion,
+                max_hops=self.graph_hops,
+            )
+
+            # Apply N-hop graph expansion if needed (before reranking)
+            if self.enable_graph_expansion and self.graph_hops > 1:
+                retrieval_result = self._apply_multihop_expansion(
+                    retrieval_result, question
+                )
+
+            # Stage 2: Reranking to top-K
+            if len(retrieval_result.objects) > 0:
+                retrieval_result = self._apply_reranking(retrieval_result, question)
+                # Truncate to final top-k
+                retrieval_result.objects = retrieval_result.objects[:self.retrieval_top_k]
+                if retrieval_result.scores:
+                    retrieval_result.scores = retrieval_result.scores[:self.retrieval_top_k]
+
+        elif self.use_llm_filter:
+            # LLM filtering (alternative to reranking)
             retrieval_result = self._canvas.retrieve_and_filter(
                 query=question,
                 candidate_k=self.filter_candidate_k,
@@ -268,30 +292,27 @@ class CogCanvasAgent(Agent):
                 use_llm_filter=True,
             )
         else:
-            # Original single-stage retrieval
+            # Original single-stage retrieval (baseline)
             retrieval_result = self._canvas.retrieve(
                 query=question,
                 top_k=self.retrieval_top_k,
                 method=self.retrieval_method,
                 include_related=self.enable_graph_expansion,
+                max_hops=self.graph_hops,
             )
 
-        # Step 1.5: Apply N-hop graph expansion if needed (for hops > 1)
-        if self.enable_graph_expansion and self.graph_hops > 1:
-            retrieval_result = self._apply_multihop_expansion(
-                retrieval_result, question
-            )
-
-        # Step 1.6: Apply reranking if enabled
-        if self.use_reranker and self._reranker and len(retrieval_result.objects) > 0:
-            retrieval_result = self._apply_reranking(retrieval_result, question)
+            # Apply N-hop graph expansion if needed
+            if self.enable_graph_expansion and self.graph_hops > 1:
+                retrieval_result = self._apply_multihop_expansion(
+                    retrieval_result, question
+                )
 
         # Step 2: Build context from retrieved objects
-        # Increased from 800 to 2000 for better recall with larger top_k
+        # Increased to 5000 to unleash full potential (RAG uses ~1500-2000, we go bigger)
         canvas_context = self._canvas.inject(
             retrieval_result,
             format="compact",
-            max_tokens=2000,
+            max_tokens=5000,
         )
 
         # Step 3: Build answer
@@ -569,37 +590,3 @@ Provide a concise, direct answer."""
         if not self._canvas:
             return {}
         return self._canvas.stats()
-
-    # =========================================================================
-    # Cache Support
-    # =========================================================================
-
-    def get_extraction_config(self) -> ExtractionConfig:
-        """Get the extraction config for this agent (used for cache key)."""
-        return ExtractionConfig(
-            extractor_model=self.extractor_model,
-            embedding_model=self.embedding_model,
-            enable_temporal_heuristic=self.enable_temporal_heuristic,
-            reference_threshold=self.reference_threshold,
-            causal_threshold=self.causal_threshold,
-            enable_vage=self.enable_vage,
-            use_learned_vage=self.use_learned_vage,
-            vage_budget_k=self.vage_budget_k,
-            vage_mode=self.vage_mode,
-        )
-
-    def get_canvas_state(self) -> dict:
-        """Get current canvas state for caching."""
-        if not self._canvas:
-            return {}
-        return get_canvas_state_dict(self._canvas)
-
-    def restore_from_cache(self, canvas_state: dict) -> None:
-        """
-        Restore canvas state from cache.
-
-        This skips the extraction phase and directly loads cached objects/graph.
-        """
-        if not self._canvas:
-            self.reset()
-        restore_canvas_state(self._canvas, canvas_state)

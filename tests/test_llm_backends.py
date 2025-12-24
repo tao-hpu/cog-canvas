@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from cogcanvas.llm import get_backend, MockLLMBackend, OpenAIBackend, AnthropicBackend
+from cogcanvas.llm import get_backend, MockLLMBackend, OpenAIBackend
 from cogcanvas.models import CanvasObject, ObjectType
 from cogcanvas import Canvas
 
@@ -26,16 +26,7 @@ class TestGetBackend:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
 
-    def test_get_anthropic_backend_without_key(self):
-        """Test getting Anthropic backend without API key."""
-        # Temporarily remove key if it exists
-        old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
-        try:
-            with pytest.raises(ValueError, match="API key required"):
-                get_backend("anthropic")
-        finally:
-            if old_key:
-                os.environ["ANTHROPIC_API_KEY"] = old_key
+
 
     def test_get_unknown_backend(self):
         """Test getting unknown backend raises error."""
@@ -171,27 +162,4 @@ class TestOpenAIBackend:
         assert all(isinstance(x, float) for x in embedding)
 
 
-@pytest.mark.skipif(
-    not os.getenv("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set"
-)
-class TestAnthropicBackend:
-    """Test Anthropic backend (requires API key)."""
 
-    def test_anthropic_extract(self):
-        """Test Anthropic extraction."""
-        backend = AnthropicBackend(model="claude-3-5-haiku-latest")
-        objects = backend.extract_objects(
-            user_message="We decided to use Redis for caching",
-            assistant_message="Excellent choice for performance!",
-        )
-        # Should extract at least a decision
-        assert len(objects) >= 1
-        assert all(isinstance(obj, CanvasObject) for obj in objects)
-
-    def test_anthropic_embed_warning(self):
-        """Test Anthropic embedding (mock implementation)."""
-        backend = AnthropicBackend()
-        embedding = backend.embed("test text")
-        assert len(embedding) == 384
-        assert all(isinstance(x, float) for x in embedding)

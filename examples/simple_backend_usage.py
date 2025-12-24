@@ -48,27 +48,7 @@ else:
     print("\n(Skipping OpenAI example - OPENAI_API_KEY not set)")
 
 
-# Example 3: Using Anthropic Backend (requires ANTHROPIC_API_KEY)
-if os.getenv("ANTHROPIC_API_KEY"):
-    print("\n" + "=" * 60)
-    print("Example 3: Anthropic Backend")
-    print("=" * 60)
 
-    anthropic_backend = get_backend("anthropic", model="claude-3-5-haiku-latest")
-    canvas3 = Canvas(llm_backend=anthropic_backend)
-
-    result3 = canvas3.extract(
-        user="Should we go with microservices or a monolith?",
-        assistant="Given your team size, I recommend starting with a monolith.",
-    )
-
-    print(f"\nExtracted {len(result3.objects)} objects:")
-    for obj in result3.objects:
-        print(f"  [{obj.type.value}] {obj.content}")
-        print(f"    Context: {obj.context}")
-        print(f"    Confidence: {obj.confidence}")
-else:
-    print("\n(Skipping Anthropic example - ANTHROPIC_API_KEY not set)")
 
 
 # Example 4: Using Canvas with automatic backend selection

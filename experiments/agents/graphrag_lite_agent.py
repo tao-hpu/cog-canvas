@@ -565,18 +565,21 @@ Only output the JSON array, no other text."""
 
     def _generate_answer(self, context: str, question: str) -> str:
         """Generate answer via LLM."""
-        prompt = f"""Answer the question based on the provided knowledge graph context and recent conversation.
-The context includes entities and relationships extracted from the conversation history.
+        prompt = f"""You are an expert reasoning agent. Your goal is to answer the user's question by connecting discrete facts from the retrieved information.
 
-If the information is not available, say "I don't have enough information."
-
+## Retrieved Context
 {context}
+
+## Instructions
+1. Analyze the retrieved information carefully
+2. Even if pieces of information are not explicitly linked, use your reasoning to infer relationships
+3. Synthesize a complete answer that explains the reasoning process
 
 ## Question
 {question}
 
 ## Answer
-Provide a concise, direct answer based on the context."""
+"""
 
         if self._client is None:
             return "I don't have enough information."

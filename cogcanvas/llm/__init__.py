@@ -3,9 +3,8 @@
 from typing import Optional
 from cogcanvas.llm.base import LLMBackend, MockLLMBackend
 from cogcanvas.llm.openai import OpenAIBackend
-from cogcanvas.llm.anthropic_backend import AnthropicBackend
 
-__all__ = ["LLMBackend", "MockLLMBackend", "OpenAIBackend", "AnthropicBackend", "get_backend"]
+__all__ = ["LLMBackend", "MockLLMBackend", "OpenAIBackend", "get_backend"]
 
 
 def get_backend(name: str, **kwargs) -> LLMBackend:
@@ -24,13 +23,11 @@ def get_backend(name: str, **kwargs) -> LLMBackend:
 
     Examples:
         >>> backend = get_backend("openai", model="gpt-4o-mini")
-        >>> backend = get_backend("anthropic", model="claude-3-5-haiku-latest")
         >>> backend = get_backend("mock")
     """
     backends = {
         "mock": MockLLMBackend,
         "openai": OpenAIBackend,
-        "anthropic": AnthropicBackend,
     }
 
     if name.lower() not in backends:

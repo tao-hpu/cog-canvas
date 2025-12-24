@@ -268,10 +268,12 @@ class MultiHopExperimentRunner:
         dataset_path: str,
         compression_turn: int = 40,
         retain_recent: int = 5,
+        rolling_interval: int = 0, # Add rolling_interval
     ):
         self.compression_turn = compression_turn
         self.retain_recent = retain_recent
         self.conversations = self._load_dataset(dataset_path)
+        self.rolling_interval = rolling_interval # Store rolling_interval
 
     def _load_dataset(self, path: str) -> List[MultiHopConversation]:
         """Load multi-hop dataset from JSON."""
@@ -344,7 +346,11 @@ class MultiHopExperimentRunner:
             print(f"\n{'='*60}")
             print(f"Multi-hop Experiment: {agent.name}")
             print(f"Conversations: {len(conversations)}")
-            print(f"Compression at turn {self.compression_turn}, retain {self.retain_recent}")
+            if self.rolling_interval > 0:
+                print(f"Strategy: Rolling Compression (interval={self.rolling_interval})")
+            else:
+                print(f"Strategy: Single Compression (at turn {self.compression_turn})")
+            print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
             print(f"{'='*60}\n")
 
@@ -374,6 +380,7 @@ class MultiHopExperimentRunner:
             config={
                 "compression_turn": self.compression_turn,
                 "retain_recent": self.retain_recent,
+                "rolling_interval": self.rolling_interval, # Add to config
                 "num_samples": num_samples or len(self.conversations),
                 "benchmark_type": "multi-hop",
             },
@@ -448,23 +455,53 @@ class MultiHopExperimentRunner:
         agent.reset()
         start_time = time.time()
 
-        # Phase 1: Process turns up to compression
-        for turn in conv.turns:
-            if turn.turn_id <= self.compression_turn:
-                agent.process_turn(turn)
+        is_rolling = self.rolling_interval > 0 # Check for rolling strategy
 
-        # Phase 2: Compression
-        retained_turns = [
-            t for t in conv.turns
-            if t.turn_id > self.compression_turn - self.retain_recent
-            and t.turn_id <= self.compression_turn
-        ]
-        agent.on_compression(retained_turns)
-
-        # Phase 3: Process remaining turns
-        for turn in conv.turns:
-            if turn.turn_id > self.compression_turn:
+        if is_rolling:
+            # === ROLLING COMPRESSION STRATEGY ===
+            if verbose:
+                print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
+            
+            current_buffer = []
+            
+            for i, turn in enumerate(conv.turns):
                 agent.process_turn(turn)
+                current_buffer.append(turn)
+                
+                # Check for compression trigger
+                if (i + 1) % self.rolling_interval == 0:
+                    retained_turns = current_buffer[-self.retain_recent:]
+                    agent.on_compression(retained_turns)
+                    
+                    # Update buffer to reflect that older turns are gone from immediate context
+                    current_buffer = list(retained_turns)
+                    
+                    if verbose:
+                         print(f"      [Rolling] Compressed at turn {turn.turn_id}")
+
+            # Final compression (optional, but good for consistency before QA)
+            retained_turns = current_buffer[-self.retain_recent:]
+            agent.on_compression(retained_turns)
+
+        else:
+            # === SINGLE COMPRESSION STRATEGY ===
+            # Phase 1: Process turns up to compression
+            for turn in conv.turns:
+                if turn.turn_id <= self.compression_turn:
+                    agent.process_turn(turn)
+
+            # Phase 2: Compression
+            retained_turns = [
+                t for t in conv.turns
+                if t.turn_id > self.compression_turn - self.retain_recent
+                and t.turn_id <= self.compression_turn
+            ]
+            agent.on_compression(retained_turns)
+
+            # Phase 3: Process remaining turns
+            for turn in conv.turns:
+                if turn.turn_id > self.compression_turn:
+                    agent.process_turn(turn)
 
         # Phase 4: Ask multi-hop questions
         question_results = []
@@ -561,6 +598,12 @@ def main():
         type=int,
         default=10,
         help="Number of parallel workers (default: 10)",
+    )
+    parser.add_argument(
+        "--rolling-interval",
+        type=int,
+        default=0,
+        help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
     )
 
     args = parser.parse_args()
@@ -687,6 +730,7 @@ def main():
         dataset_path=args.dataset,
         compression_turn=args.compression_turn,
         retain_recent=args.retain_recent,
+        rolling_interval=args.rolling_interval, # Pass new arg
     )
 
     result = runner.run(

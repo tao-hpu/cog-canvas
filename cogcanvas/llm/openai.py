@@ -7,8 +7,8 @@ from typing import List, Optional
 from cogcanvas.llm.base import LLMBackend
 from cogcanvas.models import CanvasObject, ObjectType
 
-# Extraction prompt for typed cognitive objects with provenance
-EXTRACTION_PROMPT = """You are an expert at extracting structured cognitive objects from dialogue.
+# Extraction prompt for typed cognitive objects with provenance (Chain-of-Thought Enhanced)
+EXTRACTION_PROMPT = """You are an expert at extracting structured cognitive objects from dialogue using systematic reasoning.
 
 Given a conversation turn (user message + assistant response), extract any of these object types:
 
@@ -24,13 +24,31 @@ Given a conversation turn (user message + assistant response), extract any of th
 7. **event**: Activities or occurrences WITH time (e.g., "Attended LGBTQ support group on 7 May 2023", "Ran a charity race last Sunday", "Painting a sunrise in 2022")
 8. **relationship**: Interpersonal connections (e.g., "Caroline and Melanie are close friends", "Known each other for 4 years")
 
+**CHAIN-OF-THOUGHT EXTRACTION PROTOCOL:**
+Before extracting, think step-by-step:
+1. **WHO**: Identify all people, entities, or subjects mentioned
+2. **WHEN**: Identify all temporal expressions (dates, times, sequences like "before", "after")
+3. **WHAT**: Identify facts, decisions, events, relationships
+4. **WHY**: Identify causal relationships (constraints that led to decisions)
+5. **CONNECTIONS**: Link related information (e.g., "Budget constraint" → "Choice decision")
+
 **EXTRACTION RULES:**
 - Extract ALL factual information about people (identity, status, activities, preferences)
-- Extract ALL events with their time expressions
+- Extract ALL events with their time expressions - TEMPORAL REASONING IS CRITICAL
 - Extract ALL relationships mentioned
 - Each object should be self-contained and understandable without context
 - **CRITICAL**: Include "citation" field with EXACT quote from dialogue
 - Do NOT skip personal information - it is important!
+- Pay special attention to TEMPORAL SEQUENCES (before/after, yesterday/today, dates)
+
+**GEOGRAPHIC ENTITY RULES (CRITICAL FOR RETRIEVAL):**
+- For cities: ALWAYS include both country AND city (e.g., "France (Paris)", "Canada (Toronto)")
+- For locations: Use format "Country (City)" even if only city is mentioned
+- Examples:
+  * "visited Paris" → extract as "visited France (Paris)"
+  * "went to Nuuk" → extract as "went to Greenland (Nuuk)"
+  * "lives in Toronto" → extract as "lives in Canada (Toronto)"
+- This explicit format helps with later retrieval of country/city information
 
 **CRITICAL TEMPORAL RULES:**
 - Preserve dates EXACTLY as written: "7 May 2023", "June 2023", "the sunday before 25 May 2023"

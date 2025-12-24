@@ -440,16 +440,21 @@ basic_search:
                 base_url=self.config.api_base,
             )
 
-            prompt = f"""Answer the question based on the provided context.
-If the information is not available, say "I don't have enough information."
+            prompt = f"""You are an expert reasoning agent. Your goal is to answer the user's question by connecting discrete facts from the retrieved information.
 
+## Retrieved Context
 {context}
+
+## Instructions
+1. Analyze the retrieved information carefully
+2. Even if pieces of information are not explicitly linked, use your reasoning to infer relationships
+3. Synthesize a complete answer that explains the reasoning process
 
 ## Question
 {question}
 
 ## Answer
-Provide a concise, direct answer based on the context."""
+"""
 
             return call_llm_with_retry(
                 client=client,

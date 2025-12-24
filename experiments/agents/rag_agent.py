@@ -360,16 +360,21 @@ class RagAgent(Agent):
 
     def _generate_answer(self, context: str, question: str) -> str:
         """Generate answer via LLM with exponential backoff retry."""
-        prompt = f"""Answer the question based on the provided conversation context (including retrieved fragments from history).
-If the information is not available, say "I don't have enough information."
+        prompt = f"""You are an expert reasoning agent. Your goal is to answer the user's question by connecting discrete facts from the retrieved information.
 
+## Retrieved Context
 {context}
+
+## Instructions
+1. Analyze the retrieved information carefully
+2. Even if pieces of information are not explicitly linked, use your reasoning to infer relationships
+3. Synthesize a complete answer that explains the reasoning process
 
 ## Question
 {question}
 
 ## Answer
-Provide a concise, direct answer."""
+"""
 
         if self._client is None:
             return "I don't have enough information."

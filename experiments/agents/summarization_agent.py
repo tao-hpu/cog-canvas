@@ -215,16 +215,21 @@ Provide a comprehensive summary:"""
 
     def _generate_answer(self, context: str, question: str) -> str:
         """Generate answer using LLM."""
-        prompt = f"""Based on the following context (which includes a summary of earlier conversation and recent messages), answer the question.
-If the information is not available in the context, say "I don't have enough information to answer this question."
+        prompt = f"""You are an expert reasoning agent. Your goal is to answer the user's question by connecting discrete facts from the retrieved information.
 
+## Retrieved Context
 {context}
+
+## Instructions
+1. Analyze the retrieved information carefully
+2. Even if pieces of information are not explicitly linked, use your reasoning to infer relationships
+3. Synthesize a complete answer that explains the reasoning process
 
 ## Question
 {question}
 
 ## Answer
-Provide a concise, direct answer based only on the information above."""
+"""
 
         if self._client is None:
             return "I don't have enough information to answer this question."

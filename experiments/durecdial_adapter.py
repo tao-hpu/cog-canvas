@@ -191,14 +191,16 @@ def generate_temporal_questions(turns: List[Any]) -> List[LoCoMoQAPair]:
 
 def convert_durecdial_to_locomo(
     durecdial_data: List[Dict[str, Any]], 
-    min_turns: int = 0
+    min_turns: int = 0,
+    id_prefix: str = "drd"
 ) -> List[LoCoMoConversation]:
     """
-    Convert DuRecDial data to LoCoMo format. 
+    Convert DuRecDial data to LoCoMo format.
     
     Args:
         durecdial_data: List of raw conversation dicts
         min_turns: Filter for minimum number of turns
+        id_prefix: Prefix for conversation IDs (default: "drd")
         
     Returns:
         List of LoCoMoConversation objects
@@ -293,12 +295,12 @@ def convert_durecdial_to_locomo(
         # Create Metadata
         metadata = {
             'source': 'DuRecDial2.0',
-            'original_id': item.get('conversation_id', f'drd_{idx}'),
+            'original_id': item.get('conversation_id', f'{id_prefix}_{idx}'),
             'goal': raw_goal
         }
         
         # Create Object
-        conv_id = f"drd_{idx:04d}"
+        conv_id = f"{id_prefix}_{idx:04d}"
         
         # Map simulated evidence (not really used but required by type)
         # We'll just map "turn_X" to X
@@ -315,7 +317,6 @@ def convert_durecdial_to_locomo(
         ))
         
     return conversations
-
 def load_durecdial_file(path: str) -> List[Dict[str, Any]]:
     """Load DuRecDial from JSONL or JSON."""
     data = []

@@ -43,10 +43,6 @@ from experiments.locomo_adapter import (
     LoCoMoConversation,
     LoCoMoQAPair,
 )
-from experiments.extraction_cache import (
-    ExtractionCache,
-    ExtractionConfig,
-)
 
 
 # =============================================================================
@@ -376,8 +372,7 @@ class LoCoMoExperimentRunner:
         compression_at_middle: bool = True,
         compression_turn: Optional[int] = None,
         retain_recent: int = 5,
-        cache_dir: Optional[str] = None,
-        use_cache: bool = False,
+        rolling_interval: int = 0,  # 0 means disabled (single compression)
     ):
         """
         Initialize LoCoMo runner.
@@ -387,18 +382,13 @@ class LoCoMoExperimentRunner:
             compression_at_middle: If True, compress at conversation midpoint
             compression_turn: Fixed compression turn (overrides compression_at_middle)
             retain_recent: Number of recent turns to retain after compression
-            cache_dir: Directory for extraction cache (default: experiments/cache/extraction)
-            use_cache: Whether to use cached extractions
+            rolling_interval: Interval for rolling compression (0 to disable)
         """
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
         self.retain_recent = retain_recent
         self.conversations = self._load_dataset(dataset_path)
-
-        # Cache support
-        self.use_cache = use_cache
-        self.cache_dir = cache_dir or "experiments/cache/extraction"
-        self._cache = ExtractionCache(self.cache_dir) if use_cache else None
+        self.rolling_interval = rolling_interval
 
     def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
         """Load and convert LoCoMo dataset."""
@@ -420,35 +410,21 @@ class LoCoMoExperimentRunner:
     ) -> LoCoMoExperimentResult:
         """
         Run LoCoMo experiment.
-
-        Args:
-            agent: Agent to evaluate
-            num_samples: Number of conversations to evaluate (None = all)
-            verbose: Verbosity level (0=quiet, 1=progress, 2=detailed)
-            max_workers: Number of parallel workers
-            agent_factory: Factory for creating agent instances (required for parallel)
-            max_questions_per_conv: Limit questions per conversation (for faster testing)
-            categories: Filter by question categories (e.g., [1,2,3] for memory-focused questions)
-
-        Returns:
-            LoCoMoExperimentResult
         """
         conversations = self.conversations
         if num_samples:
             conversations = conversations[:num_samples]
 
-        # Get extraction config for cache key (only for CogCanvas agents)
-        extraction_config = None
-        if self.use_cache and hasattr(agent, 'get_extraction_config'):
-            extraction_config = agent.get_extraction_config()
-
         if verbose >= 1:
             print(f"\n{'='*60}")
             print(f"LoCoMo Experiment: {agent.name}")
             print(f"Conversations: {len(conversations)}")
-            print(
-                f"Compression: {'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'}"
-            )
+            if self.rolling_interval > 0:
+                print(f"Strategy: Rolling Compression (interval={self.rolling_interval})")
+            else:
+                print(
+                    f"Strategy: Single Compression ({'middle' if self.compression_at_middle else f'turn {self.fixed_compression_turn}'})"
+                )
             print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
             print(f"Verbose level: {verbose}")
@@ -461,9 +437,6 @@ class LoCoMoExperimentRunner:
                     for c in conversations
                 )
                 print(f"Categories filter: {categories} ({total_filtered} questions)")
-            if self.use_cache:
-                cache_hash = extraction_config.to_hash() if extraction_config else "N/A"
-                print(f"Cache: ENABLED (config hash: {cache_hash})")
             print(f"{'='*60}\n")
 
         results = []
@@ -478,7 +451,6 @@ class LoCoMoExperimentRunner:
                 verbose,
                 max_questions_per_conv,
                 categories,
-                extraction_config,
             )
         else:
             for i, conv in enumerate(conversations):
@@ -487,7 +459,6 @@ class LoCoMoExperimentRunner:
 
                 result = self._run_single_conversation(
                     agent, conv, verbose, max_questions_per_conv, categories,
-                    extraction_config,
                 )
                 results.append(result)
 
@@ -502,6 +473,7 @@ class LoCoMoExperimentRunner:
             agent_name=agent.name,
             conversation_results=results,
             config={
+                "rolling_interval": self.rolling_interval,
                 "compression_at_middle": self.compression_at_middle,
                 "fixed_compression_turn": self.fixed_compression_turn,
                 "retain_recent": self.retain_recent,
@@ -530,7 +502,6 @@ class LoCoMoExperimentRunner:
         verbose: int,
         max_questions_per_conv: Optional[int],
         categories: Optional[List[int]] = None,
-        extraction_config: Optional[ExtractionConfig] = None,
     ) -> List[LoCoMoConversationResult]:
         """Run conversations in parallel."""
         results = [None] * len(conversations)
@@ -549,7 +520,7 @@ class LoCoMoExperimentRunner:
                         print(f"  [Starting] {conv.id} ({len(conv.turns)} turns, {len(conv.qa_pairs)} questions)")
                 result = self._run_single_conversation(
                     agent, conv, verbose=conv_verbose, max_questions=max_questions_per_conv,
-                    categories=categories, extraction_config=extraction_config
+                    categories=categories
                 )
             except Exception as e:
                 print(f"Error in conversation {conv.id}: {e}, skipping...")
@@ -599,87 +570,101 @@ class LoCoMoExperimentRunner:
         verbose: int = 0,
         max_questions: Optional[int] = None,
         categories: Optional[List[int]] = None,
-        extraction_config: Optional[ExtractionConfig] = None,
     ) -> LoCoMoConversationResult:
         """Run experiment on single conversation."""
         agent.reset()
         start_time = time.time()
 
-        # Determine compression point
-        if self.fixed_compression_turn:
-            compression_turn = self.fixed_compression_turn
-        else:
-            compression_turn = conv.get_compression_point()
+        # Decide strategy: Rolling vs Single
+        is_rolling = self.rolling_interval > 0
 
-        # Ensure compression point is valid
-        compression_turn = min(compression_turn, len(conv.turns))
-
-        if verbose >= 2:
-            print(f"    Compression at turn {compression_turn}/{len(conv.turns)}")
-
-        # Check cache
-        cache_hit = False
-        if self.use_cache and self._cache and extraction_config:
-            if self._cache.has(conv.id, extraction_config):
-                # Load from cache
-                cached_state = self._cache.load(conv.id, extraction_config)
-                if cached_state and hasattr(agent, 'restore_from_cache'):
-                    agent.restore_from_cache(cached_state)
-                    cache_hit = True
-                    if verbose >= 2:
-                        print(f"    [CACHE HIT] Loaded extraction from cache")
-
-        if not cache_hit:
-            # Phase 1: Process turns up to compression
-            pre_turns = [t for t in conv.turns if t.turn_id <= compression_turn]
+        # --- PROCESSING LOOP ---
+        
+        current_buffer = [] # To track turns for rolling compression context
+        
+        if is_rolling:
+            # === ROLLING COMPRESSION STRATEGY ===
             if verbose >= 2:
-                print(f"    Phase 1: Processing {len(pre_turns)} pre-compression turns...")
+                print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
+            
+            for i, turn in enumerate(conv.turns):
+                agent.process_turn(turn)
+                current_buffer.append(turn)
+                
+                # Check for compression trigger
+                # Trigger at interval, but NOT at the very last turn (leave that for QA state if needed)
+                # Actually, we SHOULD compress at the end too if we want to enforce strict retention
+                if (i + 1) % self.rolling_interval == 0:
+                    retained_turns = current_buffer[-self.retain_recent:]
+                    agent.on_compression(retained_turns)
+                    
+                    # Update buffer to reflect that older turns are gone from immediate context
+                    current_buffer = list(retained_turns)
+                    
+                    if verbose >= 3:
+                        print(f"      [Rolling] Compressed at turn {turn.turn_id}, retained {len(retained_turns)} turns")
+            
+            # Final compression to ensure state is consistent before QA (only retain last N)
+            # This simulates that we answered questions AFTER the conversation ended, with limited memory
+            retained_turns = current_buffer[-self.retain_recent:]
+            agent.on_compression(retained_turns)
+            compression_turn = len(conv.turns) # Logic compression point is the end
+
+        else:
+            # === SINGLE COMPRESSION STRATEGY (Legacy) ===
+            
+            # Determine compression point
+            if self.fixed_compression_turn:
+                compression_turn = self.fixed_compression_turn
+            else:
+                compression_turn = conv.get_compression_point()
+            compression_turn = min(compression_turn, len(conv.turns))
+
+            if verbose >= 2:
+                print(f"    Compression at turn {compression_turn}/{len(conv.turns)}")
+
+            # Phase 1: Pre-compression
+            pre_turns = [t for t in conv.turns if t.turn_id <= compression_turn]
             for i, turn in enumerate(pre_turns):
                 agent.process_turn(turn)
-                if verbose >= 3 and (i + 1) % 20 == 0:
-                    print(f"      ... processed {i + 1}/{len(pre_turns)} turns")
-
+            
             # Phase 2: Compression
-            if verbose >= 2:
-                print(f"    Phase 2: Compressing...")
             retained_turns = [
-                t
-                for t in conv.turns
+                t for t in conv.turns
                 if t.turn_id > compression_turn - self.retain_recent
                 and t.turn_id <= compression_turn
             ]
             agent.on_compression(retained_turns)
 
-            # Phase 3: Process remaining turns
+            # Phase 3: Post-compression
             post_turns = [t for t in conv.turns if t.turn_id > compression_turn]
-            if verbose >= 2:
-                print(f"    Phase 3: Processing {len(post_turns)} post-compression turns...")
             for i, turn in enumerate(post_turns):
                 agent.process_turn(turn)
-                if verbose >= 3 and (i + 1) % 20 == 0:
-                    print(f"      ... processed {i + 1}/{len(post_turns)} turns")
+        
+        # --- QA PHASE ---
+        return self._run_qa_phase(
+            agent, conv, compression_turn, start_time, verbose, max_questions, categories
+        )
 
-            # Save to cache after extraction
-            if self.use_cache and self._cache and extraction_config and hasattr(agent, 'get_canvas_state'):
-                canvas_state = agent.get_canvas_state()
-                if canvas_state:
-                    self._cache.save(
-                        conv.id,
-                        extraction_config,
-                        canvas_state,
-                        metadata={"num_objects": len(canvas_state.get("objects", []))}
-                    )
-                    if verbose >= 2:
-                        print(f"    [CACHE SAVE] Saved extraction to cache")
-
-        # Phase 4: Ask questions
+    def _run_qa_phase(
+        self,
+        agent: Agent,
+        conv: LoCoMoConversation,
+        compression_turn: int,
+        start_time: float,
+        verbose: int,
+        max_questions: Optional[int],
+        categories: Optional[List[int]],
+    ) -> LoCoMoConversationResult:
+        """Run the Question-Answering phase."""
+        
         qa_pairs = conv.qa_pairs
 
-        # Filter by categories if specified (e.g., [1,2,3] for single-hop/temporal/multi-hop)
+        # Filter by categories
         if categories:
             qa_pairs = [qa for qa in qa_pairs if qa.category in categories]
 
-        # Limit number of questions if specified
+        # Limit number of questions
         if max_questions:
             qa_pairs = qa_pairs[:max_questions]
 
@@ -770,6 +755,7 @@ def main():
             "cogcanvas-cot",
             "cogcanvas-3hop",
             "cogcanvas-3hop-rerank",  # New enhanced variants
+            "cogcanvas-enhanced",  # CoT Extraction + Two-stage Retrieval
             "cogcanvas-vage",  # Rule-based VAGE
             "cogcanvas-vage-learned",  # Learned VAGE
             "cogcanvas-vage-chain",  # Chain-Level VAGE (graph-aware)
@@ -838,16 +824,6 @@ def main():
         help="Verbose output (-v for progress, -vv for detailed question results)",
     )
     parser.add_argument(
-        "--cache-dir",
-        default="experiments/cache/extraction",
-        help="Directory for extraction cache (default: experiments/cache/extraction)",
-    )
-    parser.add_argument(
-        "--use-cache",
-        action="store_true",
-        help="Use cached extractions if available (speeds up repeated experiments)",
-    )
-    parser.add_argument(
         "--vage-mode",
         choices=["off", "standard", "chain"],
         default="off",
@@ -859,6 +835,13 @@ def main():
         help="Print detailed VAGE progress logs",
     )
 
+    parser.add_argument(
+        "--rolling-interval",
+        type=int,
+        default=40,  # Default to Rolling Compression (standard strategy)
+        help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
+    )
+
     args = parser.parse_args()
 
     # Create agent and agent factory
@@ -868,12 +851,14 @@ def main():
     if args.agent.startswith("cogcanvas"):
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
 
-        # Default Full Config (SOTA)
+        # Default Full Config (SOTA) - Updated with Top-K=10 and max_hops=3 (v3.1 optimization)
         config = {
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
             "retrieval_method": "hybrid",
             "prompt_style": "cot",
+            "retrieval_top_k": 10, # Optimized: reduced from 20 to reduce noise
+            "graph_hops": 3, # Optimized: reduced from 5 to reduce noise
         }
 
         if args.agent == "cogcanvas-nograph":
@@ -886,6 +871,7 @@ def main():
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "semantic",
                 "prompt_style": "direct",
+                "retrieval_top_k": 20,
             }
         elif args.agent == "cogcanvas-temporal":
             config = {
@@ -893,6 +879,7 @@ def main():
                 "enable_temporal_heuristic": True,
                 "retrieval_method": "semantic",
                 "prompt_style": "direct",
+                "retrieval_top_k": 20,
             }
         elif args.agent == "cogcanvas-hybrid":
             config = {
@@ -900,6 +887,7 @@ def main():
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "hybrid",
                 "prompt_style": "direct",
+                "retrieval_top_k": 20,
             }
         elif args.agent == "cogcanvas-cot":
             config = {
@@ -907,9 +895,10 @@ def main():
                 "enable_temporal_heuristic": False,
                 "retrieval_method": "semantic",
                 "prompt_style": "cot",
+                "retrieval_top_k": 20,
             }
         elif args.agent == "cogcanvas-filter":
-            # Full config with LLM Filtering (experimental - for LoCoMo improvement)
+            # Full config with LLM Filtering
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -917,15 +906,6 @@ def main():
                 "prompt_style": "cot",
                 "use_llm_filter": True,
                 "filter_candidate_k": 20,
-            }
-        elif args.agent == "cogcanvas-boost":
-            # High-recall config for LoCoMo improvement (top_k=15)
-            config = {
-                "enable_graph_expansion": True,
-                "enable_temporal_heuristic": True,
-                "retrieval_method": "hybrid",
-                "prompt_style": "cot",
-                "retrieval_top_k": 15,  # Increased from 5 to 15
             }
         elif args.agent == "cogcanvas-3hop":
             # 3-hop graph expansion (enhanced multi-hop reasoning)
@@ -947,6 +927,18 @@ def main():
                 "retrieval_top_k": 10,
                 "graph_hops": 3,
                 "use_reranker": True,  # Enable BGE reranker
+            }
+        elif args.agent == "cogcanvas-enhanced":
+            # CoT Extraction + Two-stage Retrieval (Hybrid + Rerank)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",  # BM25 + Semantic fusion
+                "prompt_style": "cot",
+                "retrieval_top_k": 5,  # Final top-k after reranking
+                "graph_hops": 3,
+                "use_reranker": True,  # Two-stage: retrieve 20 → rerank to 5
+                "filter_candidate_k": 20,  # Coarse retrieval
             }
         elif args.agent == "cogcanvas-vage":
             # Rule-based VAGE (heuristic vulnerability model)
@@ -1063,8 +1055,7 @@ def main():
         compression_at_middle=(args.compression_turn is None),
         compression_turn=args.compression_turn,
         retain_recent=args.retain_recent,
-        cache_dir=args.cache_dir,
-        use_cache=args.use_cache,
+        rolling_interval=args.rolling_interval,
     )
 
     # Parse categories filter
