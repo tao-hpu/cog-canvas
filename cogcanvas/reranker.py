@@ -300,6 +300,95 @@ class APIRerankerBackend(RerankerBackend):
         return results
 
 
+class LLMRerankerBackend(RerankerBackend):
+    """Reranker backend using LLM to score relevance (0-10 scale)."""
+
+    def __init__(self, llm_client, model: str = "gpt-4o-mini"):
+        """
+        Initialize LLM reranker backend.
+
+        Args:
+            llm_client: OpenAI-compatible client for LLM calls
+            model: Model name to use for scoring
+        """
+        self.client = llm_client
+        self.model = model
+
+    def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        top_k: Optional[int] = None
+    ) -> List[Tuple[int, float]]:
+        """
+        Rerank documents using LLM to score relevance.
+
+        Args:
+            query: The search query
+            documents: List of documents to rerank
+            top_k: Optional limit on number of results to return
+
+        Returns:
+            List of (original_index, score) tuples sorted by score descending
+        """
+        if not documents:
+            return []
+
+        results = []
+
+        for idx, doc in enumerate(documents):
+            # Ask LLM to score this document's relevance
+            prompt = f"""Rate the relevance of this information to the question on a scale of 0-10.
+
+Question: {query}
+
+Information: {doc[:500]}
+
+Provide ONLY a number from 0-10, where:
+- 0 = Completely irrelevant
+- 5 = Somewhat relevant
+- 10 = Directly answers the question
+
+Score:"""
+
+            try:
+                from experiments.llm_utils import call_llm_with_retry
+
+                response = call_llm_with_retry(
+                    client=self.client,
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5,
+                    temperature=0,
+                )
+
+                # Parse score from response
+                score_str = response.strip()
+                try:
+                    score = float(score_str)
+                    # Normalize to 0-1 range
+                    score = max(0.0, min(10.0, score)) / 10.0
+                except ValueError:
+                    # If parsing fails, assign low score
+                    score = 0.0
+
+                results.append((idx, score))
+
+            except Exception as e:
+                print(f"LLM reranking failed for doc {idx}: {e}")
+                # Fallback to neutral score
+                results.append((idx, 0.5))
+
+        # Sort by score descending
+        results.sort(key=lambda x: x[1], reverse=True)
+
+        # Apply top_k limit if specified
+        if top_k is not None:
+            results = results[:top_k]
+
+        return results
+
+
 class Reranker:
     """
     Main reranker class providing a unified interface.

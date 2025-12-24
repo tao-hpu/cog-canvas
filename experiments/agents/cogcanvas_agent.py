@@ -41,13 +41,15 @@ class CogCanvasAgent(Agent):
         retrieval_top_k: int = 10,
         enable_graph_expansion: bool = True,  # New flag for ablation
         graph_hops: int = 1,  # Number of hops for graph expansion (default 1 for backward compat)
-        use_reranker: bool = False,  # Enable reranking after retrieval
+        use_reranker: bool = True,  # Enable reranking after retrieval (NOW ENABLED)
+        reranker_type: str = "llm",  # "llm" (default), "api", or "mock"
+        reranker_candidate_k: int = 20,  # Retrieve top-20 before reranking to top-k
         use_real_llm_for_answer: bool = True,  # Default to True for fair comparison
         # Ablation Parameters
         enable_temporal_heuristic: bool = True,
         retrieval_method: str = "hybrid",  # "semantic", "keyword", "hybrid"
         # We all are cot now
-        prompt_style: str = "cot",  # "direct", "cot"
+        prompt_style: str = "cot",  # "direct", "cot", "cot_temporal"
         # LLM Filtering Parameters
         use_llm_filter: bool = False,  # Enable LLM-based filtering (new feature)
         filter_candidate_k: int = 20,  # Number of candidates before filtering
@@ -102,6 +104,8 @@ class CogCanvasAgent(Agent):
         self.enable_graph_expansion = enable_graph_expansion
         self.graph_hops = graph_hops
         self.use_reranker = use_reranker
+        self.reranker_type = reranker_type
+        self.reranker_candidate_k = reranker_candidate_k
         self.use_real_llm_for_answer = use_real_llm_for_answer
 
         # Ablation config
@@ -157,16 +161,34 @@ class CogCanvasAgent(Agent):
             pass
 
     def _init_reranker(self):
-        """Initialize reranker."""
+        """Initialize reranker based on reranker_type."""
         try:
             import os
+            from cogcanvas.reranker import LLMRerankerBackend
 
-            # Try to initialize with API, fall back to mock if not available
-            api_key = os.getenv("EMBEDDING_API_KEY")
-            if api_key:
-                self._reranker = Reranker(use_mock=False)
-            else:
+            if self.reranker_type == "llm":
+                # LLM-based reranking (uses GPT to score relevance)
+                if not self._client:
+                    self._init_client()  # Ensure LLM client is initialized
+                self._reranker = Reranker(
+                    backend=LLMRerankerBackend(
+                        llm_client=self._client,
+                        model=self.extractor_model
+                    )
+                )
+                print(f"Initialized LLM reranker with model: {self.extractor_model}")
+            elif self.reranker_type == "api":
+                # API-based reranking (uses BGE reranker)
+                api_key = os.getenv("EMBEDDING_API_KEY")
+                if api_key:
+                    self._reranker = Reranker(use_mock=False)
+                    print("Initialized API reranker")
+                else:
+                    print("No API key found, falling back to mock reranker")
+                    self._reranker = Reranker(use_mock=True)
+            else:  # "mock"
                 self._reranker = Reranker(use_mock=True)
+                print("Initialized mock reranker")
         except Exception as e:
             print(f"Failed to initialize reranker: {e}, using mock reranker")
             self._reranker = Reranker(use_mock=True)
@@ -257,8 +279,8 @@ class CogCanvasAgent(Agent):
         # Step 1: Retrieve relevant canvas objects
         # Two-stage retrieval if reranker is enabled
         if self.use_reranker and self._reranker:
-            # Stage 1: Coarse retrieval with larger K
-            coarse_k = self.filter_candidate_k if self.use_llm_filter else max(20, self.retrieval_top_k * 2)
+            # Stage 1: Coarse retrieval with larger K (use reranker_candidate_k)
+            coarse_k = self.reranker_candidate_k
             retrieval_result = self._canvas.retrieve(
                 query=question,
                 top_k=coarse_k,
@@ -526,6 +548,38 @@ Answer: {question}
 
 **Answer:**
 [Final answer]
+"""
+            elif self.prompt_style == "cot_temporal":
+                # Enhanced CoT Prompt with Temporal Reasoning Focus
+                prompt = f"""You are an expert reasoning agent with access to a structured memory graph (CogCanvas).
+Your goal is to answer questions by connecting discrete facts and tracking changes over time.
+
+## Memory Context (Retrieved Nodes)
+{canvas_context}
+
+## Instructions for Temporal Reasoning
+1. **Identify Temporal Patterns**: Look for EVENT nodes with timestamps. Pay attention to:
+   - When did something happen?
+   - How did opinions/decisions/states change over time?
+   - What is the timeline of events?
+
+2. **Track State Changes**: Notice when a PERSON_ATTRIBUTE, DECISION, or status changes:
+   - "Before X, they thought Y"
+   - "After Z happened, they changed to W"
+
+3. **Infer Causality**: Even if not explicitly linked, reason about cause-effect:
+   - Events → Decisions (e.g., "After visiting museum → decided to learn art")
+   - Constraints → Choices (e.g., "Budget $500 → chose AWS")
+
+4. **Synthesize Answer**: Provide a complete answer that:
+   - Answers WHEN if it's a temporal question
+   - Explains WHY if there's a causal chain
+   - Acknowledges uncertainty if information is incomplete
+
+## Question
+{question}
+
+## Answer
 """
             elif self.prompt_style == "cot":
                 # Chain-of-Thought Prompt (The SOTA one)
