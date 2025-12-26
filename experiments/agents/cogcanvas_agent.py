@@ -41,8 +41,8 @@ class CogCanvasAgent(Agent):
         retrieval_top_k: int = 10,
         enable_graph_expansion: bool = True,  # New flag for ablation
         graph_hops: int = 1,  # Number of hops for graph expansion (default 1 for backward compat)
-        use_reranker: bool = True,  # Enable reranking after retrieval (NOW ENABLED)
-        reranker_type: str = "llm",  # "llm" (default), "api", or "mock"
+        use_reranker: bool = False,  # Disable reranking to test baseline speed
+        reranker_type: str = "api",  # Use BGE reranker API (MUCH faster than LLM)
         reranker_candidate_k: int = 20,  # Retrieve top-20 before reranking to top-k
         use_real_llm_for_answer: bool = True,  # Default to True for fair comparison
         # Ablation Parameters

@@ -551,10 +551,14 @@ class LoCoMoExperimentRunner:
 
             return idx, result
 
+        # Sort conversations by number of questions (descending) for better load balancing
+        indexed_convs = list(enumerate(conversations))
+        indexed_convs.sort(key=lambda x: len(x[1].qa_pairs), reverse=True)
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(process_conv, i, conv): i
-                for i, conv in enumerate(conversations)
+                for i, conv in indexed_convs
             }
 
             for future in as_completed(futures):
