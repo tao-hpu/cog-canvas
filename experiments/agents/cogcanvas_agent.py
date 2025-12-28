@@ -232,12 +232,13 @@ class CogCanvasAgent(Agent):
         self._history = []
         self._retained_history = []
 
-    def process_turn(self, turn: ConversationTurn) -> None:
+    def process_turn(self, turn: ConversationTurn, verbose: int = 0) -> None:
         """
         Process a conversation turn.
 
         Extracts canvas objects and stores the turn in history.
         """
+        start = time.time()
         # Store in history
         self._history.append(turn)
 
@@ -252,21 +253,155 @@ class CogCanvasAgent(Agent):
             metadata=metadata,
             session_datetime=session_datetime,  # Pass as separate parameter for temporal resolution
         )
+        elapsed = (time.time() - start) * 1000
+        if verbose >= 3:
+            print(f"      [Turn {turn.turn_id}] Extracted in {elapsed:.0f}ms")
 
-    def on_compression(self, retained_turns: List[ConversationTurn]) -> None:
+    def should_compress(
+        self,
+        current_turn_index: int,
+        total_turns: int,
+        verbose: int = 0
+    ) -> tuple[bool, str]:
+        """
+        Dynamic compression trigger (Letta-inspired).
+
+        Returns (should_compress, reason) tuple.
+
+        Triggers based on:
+        1. Topic shift (cosine similarity between recent turns)
+        2. Object density (if extraction rate drops, topic is stale)
+        3. Turn limit (safety net: compress every 60 turns max)
+
+        Args:
+            current_turn_index: Current turn index (0-based)
+            total_turns: Total number of turns in conversation
+            verbose: Verbosity level for logging
+
+        Returns:
+            (should_compress: bool, reason: str)
+        """
+        import numpy as np
+
+        # Safety net: never exceed max turns without compression
+        MAX_TURNS_WITHOUT_COMPRESSION = 60
+        MIN_TURNS_BEFORE_COMPRESSION = 20
+
+        if current_turn_index < MIN_TURNS_BEFORE_COMPRESSION:
+            return False, "too_soon"
+
+        # Condition 1: Turn limit (safety net)
+        if current_turn_index >= MAX_TURNS_WITHOUT_COMPRESSION:
+            if verbose >= 2:
+                print(f"      [Compress Trigger] Turn limit reached ({current_turn_index} >= {MAX_TURNS_WITHOUT_COMPRESSION})")
+            return True, "turn_limit"
+
+        # Condition 2: Topic shift detection
+        # Compare recent 5 turns vs previous 5 turns using embeddings
+        if len(self._history) >= 15:
+            recent_turns = self._history[-5:]
+            prev_turns = self._history[-10:-5]
+
+            # Get embeddings for recent and previous turns
+            recent_texts = [f"{t.user} {t.assistant}" for t in recent_turns]
+            prev_texts = [f"{t.user} {t.assistant}" for t in prev_turns]
+
+            try:
+                recent_emb = self._canvas._embedding_backend.embed_batch(recent_texts)
+                prev_emb = self._canvas._embedding_backend.embed_batch(prev_texts)
+
+                # Average embeddings
+                recent_avg = np.mean(recent_emb, axis=0)
+                prev_avg = np.mean(prev_emb, axis=0)
+
+                # Cosine similarity
+                from cogcanvas.embeddings import batch_cosine_similarity
+                similarity = batch_cosine_similarity([recent_avg], [prev_avg])[0]
+
+                TOPIC_SHIFT_THRESHOLD = 0.55  # Below this = topic shifted
+                if similarity < TOPIC_SHIFT_THRESHOLD:
+                    if verbose >= 2:
+                        print(f"      [Compress Trigger] Topic shift detected (similarity={similarity:.2f} < {TOPIC_SHIFT_THRESHOLD})")
+                    return True, f"topic_shift(sim={similarity:.2f})"
+            except Exception as e:
+                if verbose >= 3:
+                    print(f"      [Compress] Topic detection failed: {e}")
+
+        # Condition 3: Object density check
+        # If recent turns have low object extraction rate, topic might be stale
+        if len(self._history) >= 20:
+            recent_10_turns = list(range(max(0, current_turn_index - 10), current_turn_index + 1))
+
+            # Count objects created in recent turns
+            recent_object_count = 0
+            for obj in self._canvas._objects.values():
+                if hasattr(obj, 'turn_id') and obj.turn_id in recent_10_turns:
+                    recent_object_count += 1
+
+            # Objects per turn in recent window
+            objects_per_turn = recent_object_count / 10
+            LOW_DENSITY_THRESHOLD = 0.5  # Below 0.5 objects/turn = low density
+
+            if objects_per_turn < LOW_DENSITY_THRESHOLD:
+                if verbose >= 2:
+                    print(f"      [Compress Trigger] Low object density ({objects_per_turn:.1f}/turn < {LOW_DENSITY_THRESHOLD})")
+                return True, f"low_density({objects_per_turn:.1f}/turn)"
+
+        return False, "none"
+
+    def on_compression(self, retained_turns: List[ConversationTurn], verbose: int = 0, reason: str = "fixed") -> None:
         """
         Handle compression event.
 
         History is truncated to retained_turns, but CANVAS OBJECTS SURVIVE.
         This is the key advantage of CogCanvas!
+
+        Args:
+            retained_turns: Turns to retain after compression
+            verbose: Verbosity level for logging
+            reason: Reason for compression trigger (for logging)
         """
+        # Get stats BEFORE compression for logging
+        total_history_turns = len(self._history)
+        total_objects = len(self._canvas._objects)
+        # Count edges across all relation types
+        total_edges = 0
+        if hasattr(self._canvas, '_graph') and hasattr(self._canvas._graph, '_edges'):
+            for rel_edges in self._canvas._graph._edges.values():
+                for targets in rel_edges.values():
+                    total_edges += len(targets)
+
         # Truncate history (simulating context compression)
         self._retained_history = retained_turns
+
+        # Log compression event with details
+        if verbose >= 1:
+            print(f"\n{'='*60}")
+            print(f"[COMPRESSION TRIGGERED] reason={reason}")
+            print(f"{'='*60}")
+            print(f"  History: {total_history_turns} turns → {len(retained_turns)} retained")
+            print(f"  Canvas Objects: {total_objects} (PRESERVED)")
+            print(f"  Graph Edges: {total_edges} (PRESERVED)")
+
+            # Show retained turn IDs
+            if verbose >= 2 and retained_turns:
+                turn_ids = [t.turn_id for t in retained_turns]
+                print(f"  Retained Turn IDs: {turn_ids}")
+
+            # Show object type distribution
+            if verbose >= 2 and total_objects > 0:
+                type_counts = {}
+                for obj in self._canvas._objects.values():
+                    obj_type = getattr(obj, 'type', 'unknown')
+                    type_counts[obj_type] = type_counts.get(obj_type, 0) + 1
+                print(f"  Object Types: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
+
+            print(f"{'='*60}\n")
 
         # NOTE: Canvas objects are NOT cleared!
         # This is the whole point - they survive compression
 
-    def answer_question(self, question: str) -> AgentResponse:
+    def answer_question(self, question: str, verbose: int = 0) -> AgentResponse:
         """
         Answer a recall question using canvas objects + retained history.
 
@@ -281,6 +416,7 @@ class CogCanvasAgent(Agent):
         if self.use_reranker and self._reranker:
             # Stage 1: Coarse retrieval with larger K (use reranker_candidate_k)
             coarse_k = self.reranker_candidate_k
+            retrieval_start = time.time()
             retrieval_result = self._canvas.retrieve(
                 query=question,
                 top_k=coarse_k,
@@ -288,6 +424,7 @@ class CogCanvasAgent(Agent):
                 include_related=self.enable_graph_expansion,
                 max_hops=self.graph_hops,
             )
+            retrieval_ms = (time.time() - retrieval_start) * 1000
 
             # Apply N-hop graph expansion if needed (before reranking)
             if self.enable_graph_expansion and self.graph_hops > 1:
@@ -297,11 +434,15 @@ class CogCanvasAgent(Agent):
 
             # Stage 2: Reranking to top-K
             if len(retrieval_result.objects) > 0:
+                rerank_start = time.time()
                 retrieval_result = self._apply_reranking(retrieval_result, question)
+                rerank_ms = (time.time() - rerank_start) * 1000
                 # Truncate to final top-k
                 retrieval_result.objects = retrieval_result.objects[:self.retrieval_top_k]
                 if retrieval_result.scores:
                     retrieval_result.scores = retrieval_result.scores[:self.retrieval_top_k]
+                if verbose >= 3:
+                    print(f"        [Retrieval] {retrieval_ms:.0f}ms, Rerank: {rerank_ms:.0f}ms, Objects: {len(retrieval_result.objects)}")
 
         elif self.use_llm_filter:
             # LLM filtering (alternative to reranking)
@@ -339,7 +480,7 @@ class CogCanvasAgent(Agent):
 
         # Step 3: Build answer
         answer = self._extract_answer_from_context(
-            question, retrieval_result, canvas_context
+            question, retrieval_result, canvas_context, verbose=verbose
         )
 
         latency = (time.time() - start_time) * 1000
@@ -471,6 +612,7 @@ class CogCanvasAgent(Agent):
         question: str,
         retrieval_result,
         canvas_context: str,
+        verbose: int = 0,
     ) -> str:
         """
         Extract answer from retrieved canvas objects.
@@ -614,13 +756,18 @@ If the information is not available, say "I don't have enough information."
 Provide a concise, direct answer."""
 
             try:
-                return call_llm_with_retry(
+                llm_start = time.time()
+                response = call_llm_with_retry(
                     client=self._client,
                     model=self.extractor_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=200,
                     temperature=0,
                 )
+                llm_ms = (time.time() - llm_start) * 1000
+                if verbose >= 3:
+                    print(f"        [LLM Answer] {llm_ms:.0f}ms")
+                return response
             except Exception as e:
                 print(f"LLM generation failed: {e}")
                 # Fallback to heuristic

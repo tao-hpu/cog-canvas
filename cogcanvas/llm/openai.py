@@ -89,6 +89,36 @@ Output:
   {"type": "relationship", "content": "User and Melanie have been friends for 4 years", "citation": "We've been friends for 4 years", "context": "Friendship duration", "confidence": 0.9, "time_expression": "4 years"}
 ]"""
 
+# Gleaning prompt for second-pass extraction (LightRAG-inspired)
+GLEANING_PROMPT = """You are reviewing an extraction result for missed information.
+
+**Previous extraction found these objects:**
+{previous_objects}
+
+**Original dialogue:**
+{dialogue}
+
+**Your task**: Find ANY information that was MISSED in the first extraction. Focus on:
+1. Pronoun references ("She", "He" → Who specifically?)
+2. Omitted subjects (Who is doing the action?)
+3. Implicit causality ("因为", "导致" → What causes what?)
+4. Time expressions (dates, "之后", "before")
+5. Relationships (Who knows whom?)
+6. Location details (Where?)
+
+**CRITICAL FORMAT RULES**:
+- Output a JSON array
+- Each object MUST have these fields: type, content, citation, context, confidence, time_expression
+- If nothing was missed, output EXACTLY: []
+
+**Example output (if found missed info)**:
+[{{"type": "person_attribute", "content": "Caroline moved from Sweden 4 years ago", "citation": "moved from Sweden 4 years ago", "context": "Background missed", "confidence": 0.9, "time_expression": "4 years ago"}}]
+
+**Example output (if nothing missed)**:
+[]
+
+Now find any missed objects:"""
+
 
 class OpenAIBackend(LLMBackend):
     """OpenAI-compatible LLM backend for extraction and embeddings."""
@@ -133,6 +163,7 @@ class OpenAIBackend(LLMBackend):
         turn_id: int = 0,
         enable_temporal_fallback: bool = True,
         session_datetime: Optional[str] = None,
+        enable_gleaning: bool = True,
     ) -> List[CanvasObject]:
         """
         Extract canvas objects using LLM with optional temporal enhancement.
@@ -145,6 +176,8 @@ class OpenAIBackend(LLMBackend):
             enable_temporal_fallback: Use regex to catch dates LLM might miss
             session_datetime: Session timestamp for relative time resolution
                              (e.g., "1:56 pm on 8 May, 2023")
+            enable_gleaning: Enable second-pass extraction to catch missed entities
+                            (LightRAG-inspired, +2x LLM calls)
 
         Returns:
             List of extracted CanvasObjects
@@ -162,6 +195,8 @@ class OpenAIBackend(LLMBackend):
             context_hint = f"\n\nAlready extracted (avoid duplicates):\n{existing_summary}"
 
         llm_objects = []
+
+        # === First pass: Standard extraction ===
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -183,7 +218,20 @@ class OpenAIBackend(LLMBackend):
 
         except Exception as e:
             # Log error but don't crash - continue with temporal fallback
-            print(f"Extraction error: {e}")
+            print(f"Extraction error (pass 1): {e}")
+
+        # === Second pass: Gleaning for missed entities ===
+        if enable_gleaning and llm_objects:
+            try:
+                gleaned_objects = self._gleaning_pass(
+                    dialogue, llm_objects, turn_id, session_datetime
+                )
+                if gleaned_objects:
+                    llm_objects.extend(gleaned_objects)
+                    # Log gleaning finds (only when something found)
+                    print(f"  [Gleaning] Found {len(gleaned_objects)} additional objects")
+            except Exception as e:
+                print(f"Gleaning error (pass 2): {e}")
 
         # Temporal fallback: use regex to catch dates LLM might have missed
         # Also resolves relative times to absolute when session_datetime is provided
@@ -199,6 +247,103 @@ class OpenAIBackend(LLMBackend):
                 pass  # Temporal module not available, skip fallback
 
         return llm_objects
+
+    def _gleaning_pass(
+        self,
+        dialogue: str,
+        first_pass_objects: List[CanvasObject],
+        turn_id: int,
+        session_datetime: Optional[str],
+    ) -> List[CanvasObject]:
+        """
+        Second-pass extraction to catch missed entities (LightRAG-inspired).
+
+        Args:
+            dialogue: The original dialogue text
+            first_pass_objects: Objects from the first extraction pass
+            turn_id: Current conversation turn
+            session_datetime: Session timestamp
+
+        Returns:
+            List of additional CanvasObjects found in gleaning pass
+        """
+        # Format first pass results for review
+        previous_objects_str = "\n".join(
+            f"- [{obj.type.value}] {obj.content}"
+            for obj in first_pass_objects
+        )
+
+        # Build gleaning prompt
+        gleaning_prompt = GLEANING_PROMPT.format(
+            previous_objects=previous_objects_str,
+            dialogue=dialogue
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": gleaning_prompt},
+                ],
+                temperature=0.1,
+                max_tokens=800,
+            )
+
+            raw_response = response.choices[0].message.content.strip()
+            gleaned_objects = self._parse_extraction_response(raw_response)
+
+            # Set metadata and mark as gleaned
+            for obj in gleaned_objects:
+                obj.turn_id = turn_id
+                obj.session_datetime = session_datetime
+                # Add gleaning marker to context for debugging
+                obj.context = f"[gleaned] {obj.context}" if obj.context else "[gleaned]"
+
+            # Deduplicate: remove objects too similar to first pass
+            unique_objects = self._deduplicate_gleaned(first_pass_objects, gleaned_objects)
+
+            return unique_objects
+
+        except Exception as e:
+            print(f"Gleaning pass error: {e}")
+            return []
+
+    def _deduplicate_gleaned(
+        self,
+        first_pass: List[CanvasObject],
+        gleaned: List[CanvasObject],
+    ) -> List[CanvasObject]:
+        """
+        Remove gleaned objects that are too similar to first pass objects.
+
+        Uses simple content overlap detection.
+        """
+        unique = []
+        first_pass_contents = {obj.content.lower() for obj in first_pass}
+
+        for obj in gleaned:
+            content_lower = obj.content.lower()
+
+            # Skip if exact or near-exact match
+            if content_lower in first_pass_contents:
+                continue
+
+            # Skip if high overlap with any first pass object
+            is_duplicate = False
+            for existing_content in first_pass_contents:
+                # Simple overlap check: if 80% of words overlap, skip
+                obj_words = set(content_lower.split())
+                existing_words = set(existing_content.split())
+                if obj_words and existing_words:
+                    overlap = len(obj_words & existing_words) / min(len(obj_words), len(existing_words))
+                    if overlap > 0.8:
+                        is_duplicate = True
+                        break
+
+            if not is_duplicate:
+                unique.append(obj)
+
+        return unique
 
     def _parse_extraction_response(self, raw_response: str) -> List[CanvasObject]:
         """Parse LLM response into CanvasObjects."""

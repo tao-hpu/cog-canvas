@@ -373,6 +373,7 @@ class LoCoMoExperimentRunner:
         compression_turn: Optional[int] = None,
         retain_recent: int = 5,
         rolling_interval: int = 0,  # 0 means disabled (single compression)
+        max_turns: int = 0,  # 0 means all turns
     ):
         """
         Initialize LoCoMo runner.
@@ -383,12 +384,14 @@ class LoCoMoExperimentRunner:
             compression_turn: Fixed compression turn (overrides compression_at_middle)
             retain_recent: Number of recent turns to retain after compression
             rolling_interval: Interval for rolling compression (0 to disable)
+            max_turns: Max turns to process per conversation (0 = all)
         """
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
         self.retain_recent = retain_recent
         self.conversations = self._load_dataset(dataset_path)
         self.rolling_interval = rolling_interval
+        self.max_turns = max_turns
 
     def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
         """Load and convert LoCoMo dataset."""
@@ -582,17 +585,24 @@ class LoCoMoExperimentRunner:
         # Decide strategy: Rolling vs Single
         is_rolling = self.rolling_interval > 0
 
+        # Apply max_turns limit if set
+        turns_to_process = conv.turns
+        if self.max_turns > 0:
+            turns_to_process = conv.turns[:self.max_turns]
+            if verbose >= 2:
+                print(f"    [max-turns] Limited to {len(turns_to_process)}/{len(conv.turns)} turns")
+
         # --- PROCESSING LOOP ---
-        
+
         current_buffer = [] # To track turns for rolling compression context
-        
+
         if is_rolling:
             # === ROLLING COMPRESSION STRATEGY ===
             if verbose >= 2:
                 print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
-            
-            for i, turn in enumerate(conv.turns):
-                agent.process_turn(turn)
+
+            for i, turn in enumerate(turns_to_process):
+                agent.process_turn(turn, verbose=verbose)
                 current_buffer.append(turn)
                 
                 # Check for compression trigger
@@ -600,50 +610,62 @@ class LoCoMoExperimentRunner:
                 # Actually, we SHOULD compress at the end too if we want to enforce strict retention
                 if (i + 1) % self.rolling_interval == 0:
                     retained_turns = current_buffer[-self.retain_recent:]
-                    agent.on_compression(retained_turns)
-                    
+                    # Pass verbose/reason to CogCanvasAgent for detailed logging
+                    if hasattr(agent, '_canvas'):  # CogCanvasAgent
+                        agent.on_compression(retained_turns, verbose=verbose, reason=f"rolling_interval_{i+1}")
+                    else:
+                        agent.on_compression(retained_turns)
+
                     # Update buffer to reflect that older turns are gone from immediate context
                     current_buffer = list(retained_turns)
-                    
+
                     if verbose >= 3:
                         print(f"      [Rolling] Compressed at turn {turn.turn_id}, retained {len(retained_turns)} turns")
-            
+
             # Final compression to ensure state is consistent before QA (only retain last N)
             # This simulates that we answered questions AFTER the conversation ended, with limited memory
             retained_turns = current_buffer[-self.retain_recent:]
-            agent.on_compression(retained_turns)
+            # Pass verbose/reason to CogCanvasAgent for detailed logging
+            if hasattr(agent, '_canvas'):  # CogCanvasAgent
+                agent.on_compression(retained_turns, verbose=verbose, reason="rolling_final")
+            else:
+                agent.on_compression(retained_turns)
             compression_turn = len(conv.turns) # Logic compression point is the end
 
         else:
             # === SINGLE COMPRESSION STRATEGY (Legacy) ===
-            
+
             # Determine compression point
             if self.fixed_compression_turn:
                 compression_turn = self.fixed_compression_turn
             else:
                 compression_turn = conv.get_compression_point()
-            compression_turn = min(compression_turn, len(conv.turns))
+            compression_turn = min(compression_turn, len(turns_to_process))
 
             if verbose >= 2:
-                print(f"    Compression at turn {compression_turn}/{len(conv.turns)}")
+                print(f"    Compression at turn {compression_turn}/{len(turns_to_process)}")
 
             # Phase 1: Pre-compression
-            pre_turns = [t for t in conv.turns if t.turn_id <= compression_turn]
+            pre_turns = [t for t in turns_to_process if t.turn_id <= compression_turn]
             for i, turn in enumerate(pre_turns):
-                agent.process_turn(turn)
-            
+                agent.process_turn(turn, verbose=verbose)
+
             # Phase 2: Compression
             retained_turns = [
-                t for t in conv.turns
+                t for t in turns_to_process
                 if t.turn_id > compression_turn - self.retain_recent
                 and t.turn_id <= compression_turn
             ]
-            agent.on_compression(retained_turns)
+            # Pass verbose/reason to CogCanvasAgent for detailed logging
+            if hasattr(agent, '_canvas'):  # CogCanvasAgent
+                agent.on_compression(retained_turns, verbose=verbose, reason=f"single_compression_turn_{compression_turn}")
+            else:
+                agent.on_compression(retained_turns)
 
             # Phase 3: Post-compression
-            post_turns = [t for t in conv.turns if t.turn_id > compression_turn]
+            post_turns = [t for t in turns_to_process if t.turn_id > compression_turn]
             for i, turn in enumerate(post_turns):
-                agent.process_turn(turn)
+                agent.process_turn(turn, verbose=verbose)
         
         # --- QA PHASE ---
         return self._run_qa_phase(
@@ -678,7 +700,7 @@ class LoCoMoExperimentRunner:
         question_results = []
         for qi, qa in enumerate(qa_pairs):
             q_start = time.time()
-            response = agent.answer_question(qa.question)
+            response = agent.answer_question(qa.question, verbose=verbose)
             latency = (time.time() - q_start) * 1000
 
             score = score_locomo_answer(response.answer, qa.answer)
@@ -844,6 +866,12 @@ def main():
         type=int,
         default=40,  # Default to Rolling Compression (standard strategy)
         help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=0,
+        help="Max turns to process per conversation (0 = all turns). Useful for quick testing.",
     )
 
     args = parser.parse_args()
@@ -1060,6 +1088,7 @@ def main():
         compression_turn=args.compression_turn,
         retain_recent=args.retain_recent,
         rolling_interval=args.rolling_interval,
+        max_turns=args.max_turns,
     )
 
     # Parse categories filter
