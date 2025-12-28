@@ -374,6 +374,7 @@ class LoCoMoExperimentRunner:
         retain_recent: int = 5,
         rolling_interval: int = 0,  # 0 means disabled (single compression)
         max_turns: int = 0,  # 0 means all turns
+        dynamic_compression: bool = False,  # Letta-inspired dynamic triggering
     ):
         """
         Initialize LoCoMo runner.
@@ -385,6 +386,7 @@ class LoCoMoExperimentRunner:
             retain_recent: Number of recent turns to retain after compression
             rolling_interval: Interval for rolling compression (0 to disable)
             max_turns: Max turns to process per conversation (0 = all)
+            dynamic_compression: Use dynamic compression triggers (topic shift, density, etc.)
         """
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
@@ -392,6 +394,7 @@ class LoCoMoExperimentRunner:
         self.conversations = self._load_dataset(dataset_path)
         self.rolling_interval = rolling_interval
         self.max_turns = max_turns
+        self.dynamic_compression = dynamic_compression
 
     def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
         """Load and convert LoCoMo dataset."""
@@ -582,8 +585,9 @@ class LoCoMoExperimentRunner:
         agent.reset()
         start_time = time.time()
 
-        # Decide strategy: Rolling vs Single
-        is_rolling = self.rolling_interval > 0
+        # Decide strategy: Dynamic vs Rolling vs Single
+        is_dynamic = self.dynamic_compression and hasattr(agent, 'should_compress')
+        is_rolling = self.rolling_interval > 0 and not is_dynamic
 
         # Apply max_turns limit if set
         turns_to_process = conv.turns
@@ -595,8 +599,42 @@ class LoCoMoExperimentRunner:
         # --- PROCESSING LOOP ---
 
         current_buffer = [] # To track turns for rolling compression context
+        compression_count = 0  # Track number of compressions
 
-        if is_rolling:
+        if is_dynamic:
+            # === DYNAMIC COMPRESSION STRATEGY (Letta-inspired) ===
+            if verbose >= 2:
+                print(f"    Running Dynamic Compression (topic shift / density / turn limit)...")
+
+            for i, turn in enumerate(turns_to_process):
+                agent.process_turn(turn, verbose=verbose)
+                current_buffer.append(turn)
+
+                # Check dynamic compression trigger
+                should_trigger, reason = agent.should_compress(
+                    current_turn_index=i,
+                    total_turns=len(turns_to_process),
+                    verbose=verbose
+                )
+
+                if should_trigger:
+                    compression_count += 1
+                    retained_turns = current_buffer[-self.retain_recent:]
+                    agent.on_compression(retained_turns, verbose=verbose, reason=reason)
+                    current_buffer = list(retained_turns)
+
+                    if verbose >= 2:
+                        print(f"      [Dynamic #{compression_count}] Compressed at turn {i+1}, reason={reason}")
+
+            # Final compression
+            retained_turns = current_buffer[-self.retain_recent:]
+            agent.on_compression(retained_turns, verbose=verbose, reason="dynamic_final")
+            compression_turn = len(turns_to_process)
+
+            if verbose >= 2:
+                print(f"    Dynamic compression triggered {compression_count} times during conversation")
+
+        elif is_rolling:
             # === ROLLING COMPRESSION STRATEGY ===
             if verbose >= 2:
                 print(f"    Running Rolling Compression (interval={self.rolling_interval})...")
@@ -604,7 +642,7 @@ class LoCoMoExperimentRunner:
             for i, turn in enumerate(turns_to_process):
                 agent.process_turn(turn, verbose=verbose)
                 current_buffer.append(turn)
-                
+
                 # Check for compression trigger
                 # Trigger at interval, but NOT at the very last turn (leave that for QA state if needed)
                 # Actually, we SHOULD compress at the end too if we want to enforce strict retention
@@ -868,6 +906,11 @@ def main():
         help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
     )
     parser.add_argument(
+        "--dynamic-compression",
+        action="store_true",
+        help="Enable dynamic compression (Letta-inspired): trigger based on topic shift, object density, or turn limit instead of fixed interval.",
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=0,
@@ -1089,6 +1132,7 @@ def main():
         retain_recent=args.retain_recent,
         rolling_interval=args.rolling_interval,
         max_turns=args.max_turns,
+        dynamic_compression=args.dynamic_compression,
     )
 
     # Parse categories filter
