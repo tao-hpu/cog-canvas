@@ -401,6 +401,41 @@ class CogCanvasAgent(Agent):
         # NOTE: Canvas objects are NOT cleared!
         # This is the whole point - they survive compression
 
+    def _adaptive_top_k(self, question: str, base_k: int = 10) -> int:
+        """
+        Dynamically adjust retrieval top-k based on question type.
+
+        Multi-hop questions need more context, simple facts need less.
+
+        Args:
+            question: The question to analyze
+            base_k: Base top-k value (default from config)
+
+        Returns:
+            Adjusted top-k value
+        """
+        q_lower = question.lower()
+
+        # Multi-hop indicators: need more context (15)
+        multihop_keywords = [
+            "after", "before", "because", "caused", "led to", "result",
+            "why did", "how did", "what happened", "consequence",
+            "influence", "affect", "impact", "relationship between"
+        ]
+        if any(kw in q_lower for kw in multihop_keywords):
+            return max(base_k, 15)
+
+        # Temporal indicators: medium context (12)
+        temporal_keywords = [
+            "when", "what time", "what date", "how long", "since",
+            "during", "while", "until", "ago", "recently"
+        ]
+        if any(kw in q_lower for kw in temporal_keywords):
+            return max(base_k, 12)
+
+        # Simple fact questions: base context
+        return base_k
+
     def answer_question(self, question: str, verbose: int = 0) -> AgentResponse:
         """
         Answer a recall question using canvas objects + retained history.
@@ -410,6 +445,9 @@ class CogCanvasAgent(Agent):
         2. Fine-grained reranking: Rerank to top-N (5-10) using LLM or reranker
         """
         start_time = time.time()
+
+        # Adaptive top-k based on question type
+        effective_top_k = self._adaptive_top_k(question, self.retrieval_top_k)
 
         # Step 1: Retrieve relevant canvas objects
         # Two-stage retrieval if reranker is enabled
@@ -437,19 +475,19 @@ class CogCanvasAgent(Agent):
                 rerank_start = time.time()
                 retrieval_result = self._apply_reranking(retrieval_result, question)
                 rerank_ms = (time.time() - rerank_start) * 1000
-                # Truncate to final top-k
-                retrieval_result.objects = retrieval_result.objects[:self.retrieval_top_k]
+                # Truncate to final top-k (using adaptive value)
+                retrieval_result.objects = retrieval_result.objects[:effective_top_k]
                 if retrieval_result.scores:
-                    retrieval_result.scores = retrieval_result.scores[:self.retrieval_top_k]
+                    retrieval_result.scores = retrieval_result.scores[:effective_top_k]
                 if verbose >= 3:
-                    print(f"        [Retrieval] {retrieval_ms:.0f}ms, Rerank: {rerank_ms:.0f}ms, Objects: {len(retrieval_result.objects)}")
+                    print(f"        [Retrieval] {retrieval_ms:.0f}ms, Rerank: {rerank_ms:.0f}ms, Objects: {len(retrieval_result.objects)}, top_k={effective_top_k}")
 
         elif self.use_llm_filter:
             # LLM filtering (alternative to reranking)
             retrieval_result = self._canvas.retrieve_and_filter(
                 query=question,
                 candidate_k=self.filter_candidate_k,
-                final_k=self.retrieval_top_k,
+                final_k=effective_top_k,  # Use adaptive value
                 method=self.retrieval_method,
                 include_related=self.enable_graph_expansion,
                 use_llm_filter=True,
@@ -458,7 +496,7 @@ class CogCanvasAgent(Agent):
             # Original single-stage retrieval (baseline)
             retrieval_result = self._canvas.retrieve(
                 query=question,
-                top_k=self.retrieval_top_k,
+                top_k=effective_top_k,  # Use adaptive value
                 method=self.retrieval_method,
                 include_related=self.enable_graph_expansion,
                 max_hops=self.graph_hops,
