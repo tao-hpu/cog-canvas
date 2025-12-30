@@ -926,14 +926,16 @@ def main():
     if args.agent.startswith("cogcanvas"):
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
 
-        # Default Full Config (SOTA) - Updated with Top-K=10 and max_hops=3 (v3.1 optimization)
+        # Default Full Config (SOTA) - v3.2: +Gleaning +AdaptiveTopK +Reranking
         config = {
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
             "retrieval_method": "hybrid",
             "prompt_style": "cot",
-            "retrieval_top_k": 10, # Optimized: reduced from 20 to reduce noise
-            "graph_hops": 3, # Optimized: reduced from 5 to reduce noise
+            "retrieval_top_k": 10,  # Base value, adaptive top-k adjusts per question
+            "graph_hops": 3,
+            "use_reranker": True,  # BGE reranking: +3.3pp
+            "reranker_candidate_k": 20,  # Retrieve 20, rerank to top-k
         }
 
         if args.agent == "cogcanvas-nograph":
