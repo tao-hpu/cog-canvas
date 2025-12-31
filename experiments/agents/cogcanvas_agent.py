@@ -36,7 +36,8 @@ class CogCanvasAgent(Agent):
 
     def __init__(
         self,
-        extractor_model: str = None,  # None = load from env
+        extractor_model: str = None,  # None = load from env (EXTRACTOR_MODEL)
+        answer_model: str = None,  # None = load from env (ANSWER_MODEL)
         embedding_model: str = None,  # None = load from env
         retrieval_top_k: int = 10,
         enable_graph_expansion: bool = True,  # New flag for ablation
@@ -62,12 +63,18 @@ class CogCanvasAgent(Agent):
         vage_budget_k: int = 10,  # Max objects to keep per turn
         vage_mode: str = "off",  # "off" | "standard" | "chain" (chain uses graph-aware selection)
         vage_verbose: bool = False,  # Print detailed VAGE logs
+        # Query Expansion Parameters
+        use_query_expansion: bool = False,  # Enable multi-query retrieval (Perplexity-style)
+        query_expansion_n: int = 3,  # Number of sub-queries to generate
+        # Cache Parameters
+        storage_path: str = None,  # Path to cache Canvas state
     ):
         """
         Initialize CogCanvas agent.
 
         Args:
-            extractor_model: Model for extraction
+            extractor_model: Model for Canvas extraction (default: EXTRACTOR_MODEL)
+            answer_model: Model for answering questions (default: ANSWER_MODEL)
             embedding_model: Model for embeddings
             retrieval_top_k: Number of objects to retrieve (default: 10)
             enable_graph_expansion: Whether to use N-hop graph expansion (Ablation)
@@ -86,15 +93,22 @@ class CogCanvasAgent(Agent):
             vage_budget_k: Max objects to keep per turn when VAGE is enabled
             vage_mode: VAGE mode - "off", "standard" (original), or "chain" (graph-aware)
             vage_verbose: Print detailed VAGE progress logs
+            use_query_expansion: Enable Perplexity-style multi-query retrieval
+            query_expansion_n: Number of sub-queries to generate (default: 3)
         """
         import os
         from dotenv import load_dotenv
 
         load_dotenv()
 
-        # Load from .env if not specified
+        # Load models from .env if not specified
+        # Extractor: EXTRACTOR_MODEL > gpt-4o-mini
         self.extractor_model = extractor_model or os.getenv(
-            "MODEL_DEFAULT", "gpt-4o-mini"
+            "EXTRACTOR_MODEL", "gpt-4o-mini"
+        )
+        # Answer: ANSWER_MODEL > glm-4-flash
+        self.answer_model = answer_model or os.getenv(
+            "ANSWER_MODEL", "glm-4-flash"
         )
         self.embedding_model = embedding_model or os.getenv(
             "EMBEDDING_MODEL", "bge-large-zh-v1.5"
@@ -128,10 +142,19 @@ class CogCanvasAgent(Agent):
         self.vage_mode = vage_mode
         self.vage_verbose = vage_verbose
 
-        # Initialize LLM client for answering
+        # Query Expansion config
+        self.use_query_expansion = use_query_expansion
+        self.query_expansion_n = query_expansion_n
+
+        # Cache config
+        self.storage_path = storage_path
+
+        # Initialize LLM client for answering (uses ANSWER_API_* if available)
         self._client = None
+        self._answer_client = None  # Separate client for answer model
         if self.use_real_llm_for_answer:
             self._init_client()
+            self._init_answer_client()
 
         # Initialize reranker if enabled
         self._reranker = None
@@ -147,16 +170,31 @@ class CogCanvasAgent(Agent):
         self.reset()
 
     def _init_client(self):
-        """Initialize LLM client."""
+        """Initialize LLM client for extraction (uses EXTRACTOR_API_*)."""
         try:
             from openai import OpenAI
             import os
 
-            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            api_key = os.getenv("EXTRACTOR_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("EXTRACTOR_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
             if api_key:
                 self._client = OpenAI(api_key=api_key, base_url=api_base)
+        except ImportError:
+            pass
+
+    def _init_answer_client(self):
+        """Initialize separate LLM client for answering (supports different API)."""
+        try:
+            from openai import OpenAI
+            import os
+
+            # Use ANSWER_API_* if available, otherwise fall back to default API_*
+            answer_api_key = os.getenv("ANSWER_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            answer_api_base = os.getenv("ANSWER_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+
+            if answer_api_key:
+                self._answer_client = OpenAI(api_key=answer_api_key, base_url=answer_api_base)
         except ImportError:
             pass
 
@@ -256,6 +294,84 @@ class CogCanvasAgent(Agent):
         elapsed = (time.time() - start) * 1000
         if verbose >= 3:
             print(f"      [Turn {turn.turn_id}] Extracted in {elapsed:.0f}ms")
+
+    def batch_extract(self, turns: List[ConversationTurn], verbose: int = 0) -> None:
+        """
+        Batch extract canvas objects from multiple turns at once.
+
+        This is the recommended extraction method:
+        - Combines all turns into a single LLM call
+        - Better context for entity resolution and relation extraction
+        - Much faster than per-turn extraction (1 call vs N calls)
+
+        Args:
+            turns: List of conversation turns to extract from
+            verbose: Verbosity level for logging
+        """
+        if not turns:
+            return
+
+        start = time.time()
+
+        # Combine all dialogue into a single conversation block
+        # CRITICAL FIX: Include session_datetime in the dialogue text
+        # Each turn may come from a different session with different datetime
+        # This allows temporal resolution to use the correct base date for each turn
+        combined_user_parts = []
+        combined_assistant_parts = []
+
+        for turn in turns:
+            session_dt = getattr(turn, "session_datetime", None)
+            dt_marker = f" (Session: {session_dt})" if session_dt else ""
+            combined_user_parts.append(f"[Turn {turn.turn_id}{dt_marker}] {turn.user}")
+            combined_assistant_parts.append(f"[Turn {turn.turn_id}] {turn.assistant}")
+
+        combined_user = "\n".join(combined_user_parts)
+        combined_assistant = "\n".join(combined_assistant_parts)
+
+        # Get session_datetime from the last turn for fallback temporal resolution
+        # Note: Per-turn session_datetime is now embedded in the dialogue text
+        session_datetime = None
+        for turn in reversed(turns):
+            session_datetime = getattr(turn, "session_datetime", None)
+            if session_datetime:
+                break
+
+        # Metadata for batch extraction
+        metadata = {
+            "turn_ids": [t.turn_id for t in turns],
+            "batch_size": len(turns),
+            "first_turn": turns[0].turn_id,
+            "last_turn": turns[-1].turn_id,
+            # Store all session datetimes for post-processing if needed
+            "session_datetimes": {
+                t.turn_id: getattr(t, "session_datetime", None)
+                for t in turns
+            },
+        }
+
+        # Single LLM call for all turns
+        self._canvas.extract(
+            user=combined_user,
+            assistant=combined_assistant,
+            metadata=metadata,
+            session_datetime=session_datetime,
+        )
+
+        # Update history
+        self._history.extend(turns)
+
+        elapsed = (time.time() - start) * 1000
+        if verbose >= 1:
+            num_objects = len(self._canvas._objects)
+            print(f"      [Batch Extract] {len(turns)} turns in {elapsed:.0f}ms, Canvas: {num_objects} objects")
+
+    def store_turns_only(self, turns: List[ConversationTurn]) -> None:
+        """
+        Store turns in history without extraction.
+        Used with batch_extract() to accumulate turns before batch processing.
+        """
+        self._history.extend(turns)
 
     def should_compress(
         self,
@@ -401,6 +517,39 @@ class CogCanvasAgent(Agent):
         # NOTE: Canvas objects are NOT cleared!
         # This is the whole point - they survive compression
 
+    # =========================================================================
+    # Cache Methods
+    # =========================================================================
+
+    def save_canvas_state(self, path: str) -> None:
+        """
+        Save the current Canvas state to a file.
+
+        Args:
+            path: Path to save the Canvas state
+        """
+        if self._canvas is not None:
+            self._canvas.save(path)
+
+    def load_canvas_state(self, path: str) -> bool:
+        """
+        Load Canvas state from a file.
+
+        Args:
+            path: Path to load the Canvas state from
+
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        if self._canvas is not None:
+            return self._canvas.load(path)
+        return False
+
+    def has_cached_state(self, path: str) -> bool:
+        """Check if cached Canvas state exists."""
+        from pathlib import Path
+        return Path(path).exists()
+
     def _adaptive_top_k(self, question: str, base_k: int = 10) -> int:
         """
         Dynamically adjust retrieval top-k based on question type.
@@ -436,6 +585,116 @@ class CogCanvasAgent(Agent):
         # Simple fact questions: base context
         return base_k
 
+    def _expand_query(self, question: str, n: int = 3, verbose: int = 0) -> List[str]:
+        """
+        Expand a complex question into multiple sub-queries (Perplexity-style).
+
+        This helps with:
+        1. Complex reasoning questions that need multiple perspectives
+        2. Questions requiring both factual recall and inference
+        3. Commonsense questions that need related context
+
+        Args:
+            question: Original question
+            n: Number of sub-queries to generate
+            verbose: Verbosity level
+
+        Returns:
+            List of queries (original + expanded)
+        """
+        if not self._client:
+            return [question]
+
+        prompt = f"""Given this question about a conversation, generate {n-1} alternative search queries that would help find relevant information.
+
+Original question: {question}
+
+Generate queries that:
+1. Rephrase the question with different keywords
+2. Ask for background/context information needed
+3. Break down complex questions into simpler parts
+
+Return ONLY the queries, one per line, no numbering or explanation.
+"""
+
+        try:
+            response = call_llm_with_retry(
+                client=self._client,
+                model=self.extractor_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=150,
+                temperature=0.3,  # Slight variation
+            )
+
+            # Parse response into queries
+            sub_queries = [q.strip() for q in response.strip().split('\n') if q.strip()]
+            # Always include original query first
+            all_queries = [question] + sub_queries[:n-1]
+
+            if verbose >= 2:
+                print(f"        [Query Expansion] {len(all_queries)} queries: {all_queries}")
+
+            return all_queries
+
+        except Exception as e:
+            if verbose >= 1:
+                print(f"        [Query Expansion] Failed: {e}, using original query")
+            return [question]
+
+    def _retrieve_with_expansion(self, question: str, top_k: int, verbose: int = 0):
+        """
+        Retrieve using multiple expanded queries and merge results.
+
+        Args:
+            question: Original question
+            top_k: Final number of objects to return
+            verbose: Verbosity level
+
+        Returns:
+            Merged RetrievalResult
+        """
+        from cogcanvas.models import RetrievalResult
+
+        # Generate expanded queries
+        queries = self._expand_query(question, self.query_expansion_n, verbose)
+
+        # Retrieve for each query
+        all_objects = []
+        all_scores = []
+        seen_ids = set()
+
+        # Retrieve fewer per query, merge to final top_k
+        per_query_k = max(top_k // len(queries) + 2, 5)
+
+        for query in queries:
+            result = self._canvas.retrieve(
+                query=query,
+                top_k=per_query_k,
+                method=self.retrieval_method,
+                include_related=self.enable_graph_expansion,
+                max_hops=self.graph_hops,
+            )
+
+            # Merge with deduplication
+            for obj, score in zip(result.objects, result.scores or [0.5] * len(result.objects)):
+                if obj.id not in seen_ids:
+                    all_objects.append(obj)
+                    all_scores.append(score)
+                    seen_ids.add(obj.id)
+
+        # Sort by score and truncate
+        if all_scores:
+            sorted_pairs = sorted(zip(all_objects, all_scores), key=lambda x: x[1], reverse=True)
+            all_objects = [p[0] for p in sorted_pairs]
+            all_scores = [p[1] for p in sorted_pairs]
+
+        return RetrievalResult(
+            objects=all_objects[:top_k * 2],  # Keep more for reranking
+            scores=all_scores[:top_k * 2],
+            query=question,
+            retrieval_time=0,
+        )
+
     def answer_question(self, question: str, verbose: int = 0) -> AgentResponse:
         """
         Answer a recall question using canvas objects + retained history.
@@ -450,8 +709,34 @@ class CogCanvasAgent(Agent):
         effective_top_k = self._adaptive_top_k(question, self.retrieval_top_k)
 
         # Step 1: Retrieve relevant canvas objects
-        # Two-stage retrieval if reranker is enabled
-        if self.use_reranker and self._reranker:
+        # Query Expansion + Reranking (new SOTA path)
+        if self.use_query_expansion:
+            retrieval_start = time.time()
+            # Use multi-query retrieval
+            retrieval_result = self._retrieve_with_expansion(
+                question, self.reranker_candidate_k if self.use_reranker else effective_top_k, verbose
+            )
+            retrieval_ms = (time.time() - retrieval_start) * 1000
+
+            # Apply reranking if enabled
+            if self.use_reranker and self._reranker and len(retrieval_result.objects) > 0:
+                rerank_start = time.time()
+                retrieval_result = self._apply_reranking(retrieval_result, question)
+                rerank_ms = (time.time() - rerank_start) * 1000
+                # Truncate to final top-k
+                retrieval_result.objects = retrieval_result.objects[:effective_top_k]
+                if retrieval_result.scores:
+                    retrieval_result.scores = retrieval_result.scores[:effective_top_k]
+                if verbose >= 2:
+                    print(f"        [QueryExpansion+Rerank] {retrieval_ms:.0f}ms + {rerank_ms:.0f}ms, Objects: {len(retrieval_result.objects)}")
+            else:
+                # Just truncate without reranking
+                retrieval_result.objects = retrieval_result.objects[:effective_top_k]
+                if retrieval_result.scores:
+                    retrieval_result.scores = retrieval_result.scores[:effective_top_k]
+
+        # Two-stage retrieval if reranker is enabled (without query expansion)
+        elif self.use_reranker and self._reranker:
             # Stage 1: Coarse retrieval with larger K (use reranker_candidate_k)
             coarse_k = self.reranker_candidate_k
             retrieval_start = time.time()
@@ -655,8 +940,9 @@ class CogCanvasAgent(Agent):
         """
         Extract answer from retrieved canvas objects.
         """
-        # 1. Use LLM if enabled and available
-        if self.use_real_llm_for_answer and self._client:
+        # 1. Use LLM if enabled and available (prefer _answer_client for answer model)
+        answer_client = self._answer_client or self._client
+        if self.use_real_llm_for_answer and answer_client:
 
             if self.prompt_style == "cot_fusion":
                 # Multi-Artifact Fusion Prompt - Connects related artifacts for complex reasoning
@@ -773,6 +1059,7 @@ Your goal is to answer the user's question by connecting discrete facts from the
 1. Analyze the retrieved nodes. Look for "Constraints" (KeyFacts/Reminders) and "Decisions".
 2. Even if the nodes are not explicitly linked, use your reasoning to infer causal relationships (e.g., "Budget is $500" likely caused "Choose Cheap Hosting").
 3. Synthesize a complete answer that explains WHY things happened.
+4. **CRITICAL for temporal questions**: When the question asks "when", use the ABSOLUTE DATE shown in [Date: ...] brackets, NOT relative terms like "yesterday" or "last week".
 
 ## Question
 {question}
@@ -796,15 +1083,15 @@ Provide a concise, direct answer."""
             try:
                 llm_start = time.time()
                 response = call_llm_with_retry(
-                    client=self._client,
-                    model=self.extractor_model,
+                    client=answer_client,
+                    model=self.answer_model,  # Use answer model (glm-4-flash) for QA
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=200,
                     temperature=0,
                 )
                 llm_ms = (time.time() - llm_start) * 1000
                 if verbose >= 3:
-                    print(f"        [LLM Answer] {llm_ms:.0f}ms")
+                    print(f"        [LLM Answer] {llm_ms:.0f}ms (model={self.answer_model})")
                 return response
             except Exception as e:
                 print(f"LLM generation failed: {e}")

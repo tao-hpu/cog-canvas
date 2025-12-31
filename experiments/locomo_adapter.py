@@ -169,12 +169,19 @@ def convert_to_eval_format(locomo_data: List[dict]) -> List[LoCoMoConversation]:
                         # Append to previous user message
                         turns[-1].user += "\n" + user_text
                         dialogue_id_to_turn[dia_id] = turns[-1].turn_id
+                        # CRITICAL: Update session_datetime if this dialogue is from a different session
+                        # This ensures temporal resolution uses the correct base date
+                        if session_datetime and turns[-1].session_datetime != session_datetime:
+                            turns[-1].session_datetime = session_datetime
                 else:
                     # Assistant response
                     if turns and turns[-1].assistant == "":
                         # Complete the current turn
                         turns[-1].assistant = assistant_text
                         dialogue_id_to_turn[dia_id] = turns[-1].turn_id
+                        # CRITICAL: Update session_datetime if this dialogue is from a different session
+                        if session_datetime and turns[-1].session_datetime != session_datetime:
+                            turns[-1].session_datetime = session_datetime
                     else:
                         # Create a new turn with empty user message
                         turns.append(ConversationTurn(

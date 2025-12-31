@@ -109,16 +109,17 @@ class APIRerankerBackend(RerankerBackend):
 
         Args:
             model: Model name (defaults to RERANKER_MODEL env var or BAAI/bge-reranker-v2-m3)
-            api_key: API key (defaults to EMBEDDING_API_KEY env var)
-            api_base: API base URL (defaults to EMBEDDING_API_BASE env var or https://api.siliconflow.cn/v1)
+            api_key: API key (defaults to RERANKER_API_KEY or EMBEDDING_API_KEY env var)
+            api_base: API base URL (defaults to RERANKER_API_BASE or EMBEDDING_API_BASE env var)
             timeout: Request timeout in seconds
         """
         self.model = model or os.environ.get(
             "RERANKER_MODEL",
             "BAAI/bge-reranker-v2-m3"
         )
-        self.api_key = api_key or os.environ.get("EMBEDDING_API_KEY")
-        self.api_base = api_base or os.environ.get(
+        # Use RERANKER_API_* first, fall back to EMBEDDING_API_* for compatibility
+        self.api_key = api_key or os.environ.get("RERANKER_API_KEY") or os.environ.get("EMBEDDING_API_KEY")
+        self.api_base = api_base or os.environ.get("RERANKER_API_BASE") or os.environ.get(
             "EMBEDDING_API_BASE",
             "https://api.siliconflow.cn/v1"
         )
@@ -126,7 +127,7 @@ class APIRerankerBackend(RerankerBackend):
 
         if not self.api_key:
             raise ValueError(
-                "API key required. Set EMBEDDING_API_KEY environment variable or pass api_key parameter."
+                "API key required. Set RERANKER_API_KEY or EMBEDDING_API_KEY environment variable or pass api_key parameter."
             )
 
     def rerank(

@@ -68,7 +68,7 @@ class Canvas:
 
         Args:
             extractor_model: Model to use for extraction (e.g., "gpt-4o-mini", "mock").
-                           Defaults to MODEL_DEFAULT env var or "mock".
+                           Defaults to EXTRACTOR_MODEL env var or "mock".
             embedding_model: Model for embeddings (e.g., "BAAI/bge-m3", "mock").
                            Defaults to EMBEDDING_MODEL env var or "mock".
             storage_path: Path to persist canvas state (optional)
@@ -88,8 +88,9 @@ class Canvas:
         import os
 
         # Load from environment if not specified
+        # Priority: param > EXTRACTOR_MODEL > mock
         self.extractor_model = extractor_model or os.environ.get(
-            "MODEL_DEFAULT", "mock"
+            "EXTRACTOR_MODEL", "mock"
         )
         self.embedding_model = embedding_model or os.environ.get(
             "EMBEDDING_MODEL", "mock"
@@ -394,6 +395,7 @@ class Canvas:
         method: Literal["semantic", "bm25", "hybrid"] = "hybrid",
         include_related: bool = False,
         max_hops: int = 5,
+        query_embedding: Optional[List[float]] = None,  # Pre-computed embedding for batch optimization
     ) -> RetrievalResult:
         """
         Retrieve relevant canvas objects for a query.
@@ -434,11 +436,11 @@ class Canvas:
             # Pure BM25
             scored = self._bm25_retrieve(query, candidates)
         elif method == "semantic":
-            # Pure semantic
-            scored = self._semantic_retrieve(query, candidates)
+            # Pure semantic (use pre-computed embedding if provided)
+            scored = self._semantic_retrieve(query, candidates, query_embedding=query_embedding)
         else:
             # Hybrid (default): BM25 + Semantic fusion
-            semantic_list = self._semantic_retrieve(query, candidates)
+            semantic_list = self._semantic_retrieve(query, candidates, query_embedding=query_embedding)
             bm25_list = self._bm25_retrieve(query, candidates)
 
             # Convert to dict for O(1) lookup
@@ -667,18 +669,22 @@ class Canvas:
             lines = []
             for obj in objects:
                 type_abbrev = obj.type.value[0].upper()  # D/T/K/R/I/P/E
-                # Include resolved time for temporal questions
-                time_info = f" [Date: {obj.event_time}]" if obj.event_time else ""
-                lines.append(f"[{type_abbrev}] {obj.content}{time_info}")
+                # Put date BEFORE content for better visibility (temporal questions)
+                if obj.event_time:
+                    lines.append(f"[{type_abbrev}] **{obj.event_time}**: {obj.content}")
+                else:
+                    lines.append(f"[{type_abbrev}] {obj.content}")
             return "\n".join(lines)
 
         # Default: markdown (most readable)
         lines = ["## Relevant Context from This Conversation\n"]
         for obj in objects:
             type_label = obj.type.value.replace("_", " ").title()
-            # Include resolved time for temporal reasoning
-            time_suffix = f" *(Date: {obj.event_time})*" if obj.event_time else ""
-            line = f"- **[{type_label}]** {obj.content}{time_suffix}"
+            # Put date BEFORE content for better visibility (temporal questions)
+            if obj.event_time:
+                line = f"- **[{type_label}]** **{obj.event_time}**: {obj.content}"
+            else:
+                line = f"- **[{type_label}]** {obj.content}"
             # Add grounding quote if available (reviewers love verifiable sources!)
             if obj.quote:
                 truncated = (
@@ -1047,9 +1053,15 @@ class Canvas:
     # Persistence
     # =========================================================================
 
-    def _save(self) -> None:
-        """Save canvas state to storage."""
-        if not self.storage_path:
+    def save(self, path: Optional[str] = None) -> None:
+        """
+        Save canvas state to storage.
+
+        Args:
+            path: Optional override path. If not provided, uses self.storage_path.
+        """
+        save_path = Path(path) if path else self.storage_path
+        if not save_path:
             return
 
         data = {
@@ -1058,16 +1070,29 @@ class Canvas:
             "graph": self._graph.to_dict(),
         }
 
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.storage_path, "w") as f:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, "w") as f:
             json.dump(data, f, indent=2)
 
-    def _load(self) -> None:
-        """Load canvas state from storage."""
-        if not self.storage_path or not self.storage_path.exists():
-            return
+    def _save(self) -> None:
+        """Save canvas state to storage (internal, uses self.storage_path)."""
+        self.save()
 
-        with open(self.storage_path) as f:
+    def load(self, path: Optional[str] = None) -> bool:
+        """
+        Load canvas state from storage.
+
+        Args:
+            path: Optional override path. If not provided, uses self.storage_path.
+
+        Returns:
+            True if state was loaded successfully, False if no cache exists.
+        """
+        load_path = Path(path) if path else self.storage_path
+        if not load_path or not load_path.exists():
+            return False
+
+        with open(load_path) as f:
             data = json.load(f)
 
         self._turn_counter = data.get("turn_counter", 0)
@@ -1085,6 +1110,17 @@ class Canvas:
             self._graph = CanvasGraph()
             for obj in self._objects.values():
                 self._graph.add_node(obj)
+
+        return True
+
+    def _load(self) -> None:
+        """Load canvas state from storage (internal, uses self.storage_path)."""
+        self.load()
+
+    @staticmethod
+    def has_cached_state(path: str) -> bool:
+        """Check if a cached state exists at the given path."""
+        return Path(path).exists()
 
     # =========================================================================
     # Private Helpers
@@ -1397,7 +1433,7 @@ class Canvas:
         return objects
 
     def _semantic_retrieve(
-        self, query: str, candidates: List[CanvasObject]
+        self, query: str, candidates: List[CanvasObject], query_embedding: Optional[List[float]] = None
     ) -> List[Tuple[CanvasObject, float]]:
         """
         Retrieve objects using semantic similarity.
@@ -1405,6 +1441,7 @@ class Canvas:
         Args:
             query: Search query
             candidates: List of candidate objects to search
+            query_embedding: Pre-computed query embedding (optional, for batch optimization)
 
         Returns:
             List of (object, score) tuples
@@ -1412,8 +1449,9 @@ class Canvas:
         if not candidates:
             return []
 
-        # Get query embedding
-        query_embedding = self._embedding_backend.embed(query)
+        # Get query embedding (use pre-computed if provided)
+        if query_embedding is None:
+            query_embedding = self._embedding_backend.embed(query)
 
         # Get candidate embeddings (filter out None embeddings)
         valid_candidates = [
@@ -1436,6 +1474,18 @@ class Canvas:
         ]
 
         return scored
+
+    def batch_embed_queries(self, queries: List[str]) -> List[List[float]]:
+        """
+        Batch embed multiple queries for optimized retrieval.
+
+        Args:
+            queries: List of query strings
+
+        Returns:
+            List of embedding vectors
+        """
+        return self._embedding_backend.embed_batch(queries)
 
     def _bm25_retrieve(
         self, query: str, candidates: List[CanvasObject]

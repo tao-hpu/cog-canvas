@@ -141,9 +141,9 @@ class OpenAIBackend(LLMBackend):
         """
         self.model = model
         self.embedding_model = embedding_model
-        # Support both OPENAI_API_KEY and API_KEY (for compatibility with different .env setups)
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY")
-        self.api_base = api_base or os.environ.get("OPENAI_API_BASE") or os.environ.get("API_BASE", "https://api.openai.com/v1")
+        # Use EXTRACTOR_API_* for extraction, with fallbacks for compatibility
+        self.api_key = api_key or os.environ.get("EXTRACTOR_API_KEY") or os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY")
+        self.api_base = api_base or os.environ.get("EXTRACTOR_API_BASE") or os.environ.get("API_BASE") or os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 
         if not self.api_key:
             raise ValueError("OpenAI API key required. Set OPENAI_API_KEY or pass api_key.")
