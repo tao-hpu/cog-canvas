@@ -84,6 +84,9 @@ results/
 !package.json
 !pyproject.json
 
+# Experiment cache (contains API keys in settings.yaml)
+experiments/cache/
+
 # Model files
 *.pt
 *.pth

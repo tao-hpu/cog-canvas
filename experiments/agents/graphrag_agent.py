@@ -376,33 +376,45 @@ basic_search:
             }
         )
 
-    def _query_graphrag(self, work_dir: str, question: str) -> Optional[str]:
-        """Query graphrag using CLI."""
-        try:
-            result = subprocess.run(
-                [
-                    self.python_path, "-m", "graphrag", "query",
-                    "--method", self.config.search_method,
-                    "--query", question,
-                ],
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
+    def _query_graphrag(self, work_dir: str, question: str, max_retries: int = 3) -> Optional[str]:
+        """Query graphrag using CLI with retry mechanism."""
+        for attempt in range(max_retries):
+            try:
+                result = subprocess.run(
+                    [
+                        self.python_path, "-m", "graphrag", "query",
+                        "--method", self.config.search_method,
+                        "--query", question,
+                    ],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
 
-            if result.returncode == 0:
-                return result.stdout.strip()
-            else:
-                print(f"GraphRAG query failed: {result.stderr}")
+                if result.returncode == 0:
+                    return result.stdout.strip()
+                else:
+                    print(f"GraphRAG query failed: {result.stderr}")
+                    if attempt < max_retries - 1:
+                        print(f"  Retrying ({attempt + 1}/{max_retries})...")
+                        continue
+                    return None
+
+            except subprocess.TimeoutExpired:
+                if attempt < max_retries - 1:
+                    print(f"GraphRAG query timed out, retrying ({attempt + 1}/{max_retries})...")
+                    continue
+                print("GraphRAG query timed out after 3 attempts")
+                return None
+            except Exception as e:
+                print(f"GraphRAG query error: {e}")
+                if attempt < max_retries - 1:
+                    print(f"  Retrying ({attempt + 1}/{max_retries})...")
+                    continue
                 return None
 
-        except subprocess.TimeoutExpired:
-            print("GraphRAG query timed out")
-            return None
-        except Exception as e:
-            print(f"GraphRAG query error: {e}")
-            return None
+        return None
 
     def _answer_from_history_only(self, question: str, start_time: float) -> AgentResponse:
         """Fallback: Answer from recent history only."""
