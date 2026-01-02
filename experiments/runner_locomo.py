@@ -1349,7 +1349,11 @@ Answer:"""
             # === SEQUENTIAL QA ===
             for qi, qa in enumerate(qa_pairs):
                 q_start = time.time()
-                response = agent.answer_question(qa.question, verbose=verbose)
+                # Only CogCanvasAgent supports verbose in answer_question
+                if hasattr(agent, '_canvas'):
+                    response = agent.answer_question(qa.question, verbose=verbose)
+                else:
+                    response = agent.answer_question(qa.question)
                 latency = (time.time() - q_start) * 1000
 
                 score = self._score_answer(response.answer, qa.answer, qa.question)
