@@ -39,7 +39,7 @@ from experiments.data_gen import ConversationTurn
 class GraphRAGConfig:
     """Configuration for GraphRAG agent."""
     model: str = "gpt-4o-mini"
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_model: str = "bge-m3"  # Use env EMBEDDING_MODEL (not BAAI/bge-m3)
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     embedding_api_key: Optional[str] = None
@@ -389,6 +389,12 @@ basic_search:
             else:
                 # Index failed - show detailed error
                 print(f"  [GraphRAG] Indexing failed (communities.parquet not created)", flush=True)
+                print(f"  [GraphRAG] Return code: {result.returncode}", flush=True)
+                if result.stdout:
+                    # Look for error lines in stdout
+                    error_lines = [l for l in result.stdout.split('\n') if 'error' in l.lower() or 'failed' in l.lower()]
+                    if error_lines:
+                        print(f"  [GraphRAG] Errors: {error_lines[:3]}", flush=True)
                 if result.stderr and 'RuntimeWarning' not in result.stderr:
                     print(f"  [GraphRAG] Stderr: {result.stderr[:300]}", flush=True)
         except subprocess.TimeoutExpired:

@@ -1131,8 +1131,9 @@ class LoCoMoExperimentRunner:
         q_start = time.time()
 
         # Create independent client for this thread
-        api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-        api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+        # Use ANSWER_API_KEY/BASE for QA, fallback to generic API_KEY/BASE
+        api_key = os.getenv("ANSWER_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+        api_base = os.getenv("ANSWER_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
         client = OpenAI(api_key=api_key, base_url=api_base)
 
         # Build prompt (similar to _extract_answer_from_context)
@@ -1170,9 +1171,17 @@ Answer:"""
                 max_tokens=200,
                 temperature=0,
                 verbose=False,  # Suppress retry logs in parallel
+                timeout=60,  # 60s timeout per request to prevent infinite hang
+                max_retries=5,  # Max 5 retries per question to prevent infinite loop
             )
+            # Ensure answer is not None
+            if answer is None:
+                answer = "Error: LLM returned None"
         except Exception as e:
-            answer = f"Error: {e}"
+            import threading
+            thread_id = threading.current_thread().name
+            print(f"        [WARN] Q#{qa.question[:30]}... failed in {thread_id}: {type(e).__name__}", flush=True)
+            answer = f"Error: {type(e).__name__}"
 
         latency = (time.time() - q_start) * 1000
 
@@ -1223,13 +1232,19 @@ Answer:"""
         if max_questions:
             qa_pairs = qa_pairs[:max_questions]
 
+        # Parallel QA only works for CogCanvas agents (requires _canvas for retrieval)
+        # Other agents must use sequential mode with their own answer_question method
+        use_parallel = self.qa_parallel > 1 and len(qa_pairs) > 1 and hasattr(agent, '_canvas') and agent._canvas
+
         if verbose >= 2:
-            mode = f"parallel ({self.qa_parallel} workers)" if self.qa_parallel > 1 else "sequential"
+            mode = f"parallel ({self.qa_parallel} workers)" if use_parallel else "sequential"
+            if self.qa_parallel > 1 and not use_parallel:
+                mode += " (parallel not supported for this agent)"
             print(f"    Phase 4: Answering {len(qa_pairs)} questions ({mode})...")
 
         question_results = []
 
-        if self.qa_parallel > 1 and len(qa_pairs) > 1:
+        if use_parallel:
             # === PARALLEL QA ===
             # Strategy: Pre-compute retrieval contexts (sequential), then parallel LLM calls
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1308,18 +1323,35 @@ Answer:"""
                 # Collect results as they complete
                 results_by_idx = {}
                 completed = 0
+                llm_start_time = time.time()
+                last_progress_time = llm_start_time
+                stall_warned = False
+
                 for future in as_completed(future_to_idx):
                     idx = future_to_idx[future]
                     result = future.result()
                     results_by_idx[idx] = result
                     completed += 1
+                    last_progress_time = time.time()
+                    stall_warned = False  # Reset stall warning on progress
 
                     if verbose >= 2 and (completed % 10 == 0 or completed == len(qa_pairs)):
                         # Show progress every 10 questions
                         passed_so_far = sum(1 for r in results_by_idx.values() if r.score.passed)
+                        elapsed = time.time() - llm_start_time
+                        avg_per_q = elapsed / completed if completed > 0 else 0
+                        remaining = len(qa_pairs) - completed
+                        eta = avg_per_q * remaining
                         print(
-                            f"        LLM progress: {completed}/{len(qa_pairs)} done, {passed_so_far} passed", flush=True
+                            f"        LLM progress: {completed}/{len(qa_pairs)} done, {passed_so_far} passed "
+                            f"[{elapsed:.0f}s elapsed, ~{eta:.0f}s remaining]", flush=True
                         )
+
+                        # Detailed log at verbose >= 3
+                        if verbose >= 3:
+                            pending_indices = [future_to_idx[f] for f in future_to_idx if f not in results_by_idx or not f.done()]
+                            if pending_indices:
+                                print(f"          Pending question indices: {pending_indices[:10]}{'...' if len(pending_indices) > 10 else ''}", flush=True)
 
             # Restore original order
             question_results = [results_by_idx[i] for i in range(len(qa_contexts))]
