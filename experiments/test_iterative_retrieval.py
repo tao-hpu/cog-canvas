@@ -30,7 +30,7 @@ def test_iterative_retrieval(num_samples=20):
     import os
 
     canvas = Canvas(
-        extractor_model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
+        extractor_model=os.getenv("EXTRACTOR_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         embedding_model=os.getenv("EMBEDDING_MODEL", "bge-large-zh-v1.5"),
     )
 

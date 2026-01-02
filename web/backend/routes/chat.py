@@ -15,8 +15,8 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # Lazy-initialized OpenAI client
 _client = None
 
-# Chat model for response generation (use MODEL_DEFAULT for faster responses)
-CHAT_MODEL = os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
+# Chat model for response generation
+CHAT_MODEL = os.environ.get("ANSWER_MODEL") or os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
 
 
 def get_openai_client():

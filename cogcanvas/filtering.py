@@ -113,7 +113,7 @@ class RetrievalFilter:
             min_relevance_score: Minimum score (0-1) to include an object
         """
         self._client = None
-        self._model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        self._model = model or os.getenv("EXTRACTOR_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
         self.prompt_template = prompt_template or FILTER_PROMPT_TEMPLATE
         self.min_relevance_score = min_relevance_score
 
@@ -124,8 +124,8 @@ class RetrievalFilter:
         try:
             from openai import OpenAI
 
-            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            api_key = os.getenv("EXTRACTOR_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("EXTRACTOR_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
             if api_key:
                 self._client = OpenAI(api_key=api_key, base_url=api_base)

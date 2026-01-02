@@ -83,10 +83,11 @@ def call_llm_with_retry(
     temperature: float = 0,
     base_delay: float = DEFAULT_BASE_DELAY,
     verbose: bool = True,
+    max_retries: int = 10,  # Maximum retry attempts (0 = infinite)
     **kwargs
 ) -> str:
     """
-    Call LLM with infinite retry until success.
+    Call LLM with retry until success or max retries reached.
 
     Args:
         client: OpenAI-compatible client
@@ -96,10 +97,14 @@ def call_llm_with_retry(
         temperature: Sampling temperature
         base_delay: Initial delay between retries
         verbose: Whether to print retry messages
+        max_retries: Maximum retry attempts (0 = infinite, default=10)
         **kwargs: Additional arguments for the API call
 
     Returns:
         Response content string
+
+    Raises:
+        Exception: If max_retries exceeded
     """
     attempt = 0
 
@@ -116,9 +121,16 @@ def call_llm_with_retry(
 
         except Exception as e:
             attempt += 1
+
+            # Check if max retries exceeded
+            if max_retries > 0 and attempt >= max_retries:
+                if verbose:
+                    print(f"[FAILED] Max retries ({max_retries}) exceeded: {type(e).__name__}: {e}")
+                raise
+
             delay = calculate_backoff_delay(min(attempt, 10), base_delay)  # Cap at 10 for delay calc
             if verbose:
-                print(f"[Retry {attempt}] {type(e).__name__}: {e}")
+                print(f"[Retry {attempt}/{max_retries if max_retries > 0 else '∞'}] {type(e).__name__}: {e}")
                 print(f"  Waiting {delay:.1f}s before retry...")
             time.sleep(delay)
 

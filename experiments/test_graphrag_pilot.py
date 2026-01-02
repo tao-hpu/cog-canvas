@@ -162,8 +162,8 @@ def setup_graphrag_project(work_dir: str, conversation_text: str) -> bool:
 
     # Write settings
     settings = SETTINGS_TEMPLATE.format(
-        api_key=os.getenv("API_KEY"),
-        api_base=os.getenv("API_BASE"),
+        api_key=os.getenv("EXTRACTOR_API_KEY") or os.getenv("API_KEY"),
+        api_base=os.getenv("EXTRACTOR_API_BASE") or os.getenv("API_BASE"),
         embedding_api_key=os.getenv("EMBEDDING_API_KEY"),
         embedding_api_base=os.getenv("EMBEDDING_API_BASE"),
     )

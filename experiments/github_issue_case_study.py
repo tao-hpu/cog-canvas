@@ -207,7 +207,7 @@ def run_case_study():
 
     # Initialize Canvas with OpenAI backend
     # Use gpt-4o-mini for cost efficiency
-    model = os.getenv("MODEL_DEFAULT", "gpt-4o-mini")  # Use weak model for extraction
+    model = os.getenv("EXTRACTOR_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
     print(f"Extraction Model: {model}")
     print()
 

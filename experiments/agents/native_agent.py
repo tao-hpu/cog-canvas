@@ -50,7 +50,7 @@ class NativeAgent(Agent):
         self.retain_recent = retain_recent
 
         # Use MODEL_DEFAULT by default (same as CogCanvas for fair comparison)
-        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        self.model = model or os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
 
         # Initialize LLM client
         self._client = None
@@ -65,12 +65,12 @@ class NativeAgent(Agent):
         try:
             from openai import OpenAI
 
-            # Use unified API_KEY and API_BASE (supports one-api proxy)
-            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            # Use ANSWER_API_* for answering questions
+            api_key = os.getenv("ANSWER_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("ANSWER_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
             if not api_key:
-                print("Warning: API_KEY not set, using mock responses")
+                print("Warning: ANSWER_API_KEY/API_KEY not set, using mock responses")
                 self._client = None
                 return
 

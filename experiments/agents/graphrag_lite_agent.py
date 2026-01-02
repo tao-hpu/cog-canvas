@@ -123,7 +123,7 @@ Only output the JSON array, no other text."""
         self.use_llm_extraction = use_llm_extraction
 
         # Models
-        self.model = model or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+        self.model = model or os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
         embed_model_name = embedding_model or os.getenv(
             "EMBEDDING_MODEL", "bge-large-zh-v1.5"
         )
@@ -171,8 +171,8 @@ Only output the JSON array, no other text."""
         try:
             from openai import OpenAI
 
-            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            api_key = os.getenv("ANSWER_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("ANSWER_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
 
             if api_key:
                 self._client = OpenAI(api_key=api_key, base_url=api_base)

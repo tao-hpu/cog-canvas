@@ -87,7 +87,7 @@ QA_QUESTIONS = [
 
 def initialize_canvas():
     """Initialize CogCanvas with extracted artifacts from RFC."""
-    model = os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
+    model = os.getenv("EXTRACTOR_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini")
     canvas = Canvas(extractor_model=model)
 
     print("Processing RFC turns through CogCanvas...")
@@ -116,7 +116,7 @@ def generate_summary(turns: list[dict]) -> str:
         full_text += f"\n--- Turn {i} ---\nUser: {turn['user']}\nAssistant: {turn['assistant']}\n"
 
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
+        model=os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
@@ -156,7 +156,7 @@ def answer_with_cogcanvas(canvas: Canvas, question: str) -> dict:
 
     # Generate answer
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
+        model=os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
@@ -186,7 +186,7 @@ def answer_with_summary(summary: str, question: str) -> dict:
     )
 
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
+        model=os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",
@@ -221,7 +221,7 @@ def answer_with_truncation(
         context += f"\n--- Turn {turn_num} ---\nUser: {turn['user']}\nAssistant: {turn['assistant']}\n"
 
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
+        model=os.getenv("ANSWER_MODEL") or os.getenv("MODEL_DEFAULT", "gpt-4o-mini"),
         messages=[
             {
                 "role": "system",

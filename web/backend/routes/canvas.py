@@ -27,7 +27,7 @@ def get_canvas(session_id: str = "default") -> Canvas:
     """Get or create a canvas instance for the session."""
     if session_id not in _canvas_instances:
         # Read env vars at runtime (after load_dotenv in main.py)
-        extractor_model = os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
+        extractor_model = os.environ.get("EXTRACTOR_MODEL") or os.environ.get("MODEL_DEFAULT", "gpt-4o-mini")
         embedding_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 
         _canvas_instances[session_id] = Canvas(
