@@ -247,6 +247,11 @@ basic_search:
         self._history = []
         self._retained_history = []
         self._index_built = False
+        self._conv_id = None
+
+    def set_conv_id(self, conv_id: str) -> None:
+        """Set current conversation ID for caching."""
+        self._conv_id = conv_id
 
     def _cleanup_work_dir(self):
         """Clean up temporary working directory."""
@@ -308,15 +313,30 @@ basic_search:
         ]
 
         if turns_to_process and not self._index_built:
-            self._build_index(turns_to_process)
+            self._build_index(turns_to_process, conv_id=getattr(self, '_conv_id', None))
             self._index_built = True
 
         # Update retained history
         self._retained_history = list(retained_turns)
         self._history = list(retained_turns)
 
-    def _build_index(self, turns: List[ConversationTurn]) -> None:
-        """Build graphrag index from conversation turns."""
+    def _get_cache_path(self, conv_id: str) -> Path:
+        """Get cache path for a conversation's GraphRAG index."""
+        cache_dir = Path("experiments/cache/graphrag_indexes")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / conv_id
+
+    def _build_index(self, turns: List[ConversationTurn], conv_id: Optional[str] = None) -> None:
+        """Build graphrag index from conversation turns (with caching)."""
+        # Check cache first
+        if conv_id:
+            cache_path = self._get_cache_path(conv_id)
+            communities_cache = cache_path / "output" / "communities.parquet"
+            if communities_cache.exists():
+                print(f"  [GraphRAG] Cache hit for {conv_id}, loading from {cache_path}", flush=True)
+                self._work_dir = str(cache_path)
+                return
+
         work_dir = self._setup_work_dir()
         work_path = Path(work_dir)
 
@@ -332,20 +352,37 @@ basic_search:
         input_path.write_text("\n".join(lines))
 
         # Run graphrag indexing
+        print(f"  [GraphRAG] Starting indexing for {len(turns)} turns...", flush=True)
         try:
             result = subprocess.run(
                 [self.python_path, "-m", "graphrag", "index"],
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10 minutes max
+                timeout=900  # 15 minutes max (300+ turns need more time)
             )
-            if result.returncode != 0:
-                print(f"GraphRAG indexing failed: {result.stderr}")
+
+            # Verify communities.parquet was created (this is the real success indicator)
+            communities_path = work_path / "output" / "communities.parquet"
+
+            if communities_path.exists():
+                print(f"  [GraphRAG] Indexing completed successfully", flush=True)
+                # Save to cache
+                if conv_id:
+                    cache_path = self._get_cache_path(conv_id)
+                    if cache_path.exists():
+                        shutil.rmtree(cache_path)
+                    shutil.copytree(work_dir, cache_path)
+                    print(f"  [GraphRAG] Cached index to {cache_path}", flush=True)
+            else:
+                # Index failed - show detailed error
+                print(f"  [GraphRAG] Indexing failed (communities.parquet not created)", flush=True)
+                if result.stderr and 'RuntimeWarning' not in result.stderr:
+                    print(f"  [GraphRAG] Stderr: {result.stderr[:300]}", flush=True)
         except subprocess.TimeoutExpired:
-            print("GraphRAG indexing timed out")
+            print("  [GraphRAG] Indexing timed out after 15 minutes", flush=True)
         except Exception as e:
-            print(f"GraphRAG indexing error: {e}")
+            print(f"  [GraphRAG] Indexing error: {e}", flush=True)
 
     def answer_question(self, question: str) -> AgentResponse:
         """Answer question using graphrag search."""
@@ -356,6 +393,12 @@ basic_search:
 
         if not work_dir or not os.path.exists(work_dir):
             # No index available, fall back to recent history only
+            return self._answer_from_history_only(question, start_time)
+
+        # Check if index was built successfully (communities.parquet must exist)
+        communities_path = Path(work_dir) / "output" / "communities.parquet"
+        if not communities_path.exists():
+            # Index failed, fall back to recent history only
             return self._answer_from_history_only(question, start_time)
 
         # Query graphrag

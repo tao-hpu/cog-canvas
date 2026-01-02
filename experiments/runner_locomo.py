@@ -913,6 +913,10 @@ class LoCoMoExperimentRunner:
         agent.reset()
         start_time = time.time()
 
+        # Set conversation ID for agents that support caching (e.g., GraphRAG)
+        if hasattr(agent, 'set_conv_id'):
+            agent.set_conv_id(conv.id)
+
         # === CACHE CHECK ===
         cache_path = None
         cache_loaded = False
@@ -994,13 +998,17 @@ class LoCoMoExperimentRunner:
                 # Every N turns: extract + compress
                 if (i + 1) % self.rolling_interval == 0:
                     # Step 1: Extract
-                    if use_batch:
-                        # BATCH MODE: 1 LLM call for N turns (recommended)
+                    if use_batch and hasattr(agent, 'batch_extract'):
+                        # BATCH MODE: 1 LLM call for N turns (recommended, CogCanvas only)
                         agent.batch_extract(batch_buffer, verbose=verbose)
                     else:
-                        # PER-TURN MODE: N LLM calls (legacy, slow)
+                        # PER-TURN MODE: N LLM calls (for all agents)
                         for t in batch_buffer:
-                            agent.process_turn(t, verbose=verbose)
+                            # Only CogCanvasAgent supports verbose in process_turn
+                            if hasattr(agent, '_canvas'):
+                                agent.process_turn(t, verbose=verbose)
+                            else:
+                                agent.process_turn(t)
 
                     # Step 2: Compress history (keep last 5 turns)
                     retained_turns = current_buffer[-self.retain_recent:]
@@ -1018,11 +1026,14 @@ class LoCoMoExperimentRunner:
 
             # Handle remaining turns (< interval size)
             if batch_buffer:
-                if use_batch:
+                if use_batch and hasattr(agent, 'batch_extract'):
                     agent.batch_extract(batch_buffer, verbose=verbose)
                 else:
                     for t in batch_buffer:
-                        agent.process_turn(t, verbose=verbose)
+                        if hasattr(agent, '_canvas'):
+                            agent.process_turn(t, verbose=verbose)
+                        else:
+                            agent.process_turn(t)
 
             # Final compression to ensure state is consistent before QA
             retained_turns = current_buffer[-self.retain_recent:]
