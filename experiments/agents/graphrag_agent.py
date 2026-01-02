@@ -201,15 +201,27 @@ basic_search:
         self.retain_recent = retain_recent
         self.precomputed_index_path = precomputed_index_path
 
-        # Fill in API keys from env if not provided
+        # Fill in model and API keys from env (use GRAPHRAG_* first, fallback to others)
+        # LLM config for graph extraction
         if not self.config.api_key:
-            self.config.api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            self.config.api_key = os.getenv("GRAPHRAG_LLM_API_KEY") or os.getenv("EXTRACTOR_API_KEY")
         if not self.config.api_base:
-            self.config.api_base = os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
+            self.config.api_base = os.getenv("GRAPHRAG_LLM_API_BASE") or os.getenv("EXTRACTOR_API_BASE")
+        if self.config.model == "gpt-4o-mini":
+            self.config.model = os.getenv("GRAPHRAG_LLM_MODEL") or os.getenv("EXTRACTOR_MODEL") or "gpt-4o-mini"
+
+        # Embedding config for graph indexing
+        if self.config.embedding_model == "bge-m3":
+            self.config.embedding_model = os.getenv("GRAPHRAG_EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL") or "bge-m3"
         if not self.config.embedding_api_key:
-            self.config.embedding_api_key = os.getenv("EMBEDDING_API_KEY") or self.config.api_key
+            self.config.embedding_api_key = os.getenv("GRAPHRAG_EMBEDDING_API_KEY") or os.getenv("EMBEDDING_API_KEY")
         if not self.config.embedding_api_base:
-            self.config.embedding_api_base = os.getenv("EMBEDDING_API_BASE") or self.config.api_base
+            self.config.embedding_api_base = os.getenv("GRAPHRAG_EMBEDDING_API_BASE") or os.getenv("EMBEDDING_API_BASE")
+
+        # For query phase, store ANSWER_* config separately
+        self._answer_model = os.getenv("ANSWER_MODEL") or self.config.model
+        self._answer_api_key = os.getenv("ANSWER_API_KEY") or self.config.api_key
+        self._answer_api_base = os.getenv("ANSWER_API_BASE") or self.config.api_base
 
         # Find Python with graphrag
         self.python_path = python_path
@@ -490,9 +502,10 @@ basic_search:
         try:
             from openai import OpenAI
 
+            # Use ANSWER_* config for generating final answers
             client = OpenAI(
-                api_key=self.config.api_key,
-                base_url=self.config.api_base,
+                api_key=self._answer_api_key,
+                base_url=self._answer_api_base,
             )
 
             prompt = f"""You are an expert reasoning agent. Your goal is to answer the user's question by connecting discrete facts from the retrieved information.
@@ -513,7 +526,7 @@ basic_search:
 
             return call_llm_with_retry(
                 client=client,
-                model=self.config.model,
+                model=self._answer_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
