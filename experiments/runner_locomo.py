@@ -143,6 +143,10 @@ def normalize_answer(text: str) -> str:
     """
     import string
 
+    # Handle None
+    if text is None:
+        return ""
+
     # Lowercase
     text = text.lower()
 
@@ -265,6 +269,8 @@ def score_locomo_answer_llm(
     """
     from experiments.llm_utils import call_llm_with_retry
 
+    # Binary LLM Judge (aligned with SOTA: Mem0, Zep, Memobase)
+    # Only CORRECT (1) or INCORRECT (0), no partial credit
     prompt = f"""You are an expert evaluator. Judge if the predicted answer is semantically correct compared to the ground truth.
 
 ## Question
@@ -276,15 +282,16 @@ def score_locomo_answer_llm(
 ## Predicted Answer
 {answer}
 
-## Evaluation Criteria (5-point scale)
-- CORRECT: Fully correct, conveys the same meaning (synonyms, paraphrases, equivalent date formats are acceptable)
-- MOSTLY_CORRECT: Almost correct with minor omissions or imprecisions that don't change the core meaning
-- PARTIAL: Partially correct, contains some correct info but missing key parts or has notable errors
-- MOSTLY_WRONG: Contains a small bit of relevant info but largely incorrect or misleading
-- INCORRECT: Completely wrong, irrelevant, or contradicts the ground truth
+## Evaluation Criteria (Binary - strict)
+- CORRECT: The predicted answer correctly answers the question and conveys the same core meaning as the ground truth. Synonyms, paraphrases, and equivalent formats (e.g., "March 15" vs "3/15") are acceptable.
+- INCORRECT: The predicted answer is wrong, incomplete, irrelevant, contradicts the ground truth, or fails to answer the question.
+
+## Important
+- Be strict: partial answers or answers with significant missing information should be marked INCORRECT
+- The answer must address the actual question being asked
 
 ## Response Format
-Reply with ONLY one word: CORRECT, MOSTLY_CORRECT, PARTIAL, MOSTLY_WRONG, or INCORRECT"""
+Reply with ONLY one word: CORRECT or INCORRECT"""
 
     try:
         response = call_llm_with_retry(
@@ -296,20 +303,11 @@ Reply with ONLY one word: CORRECT, MOSTLY_CORRECT, PARTIAL, MOSTLY_WRONG, or INC
         )
         judgment = response.strip().upper()
 
-        # Map judgment to 5-point scores
-        # IMPORTANT: Check longer strings first to avoid substring matching issues
-        if "MOSTLY_CORRECT" in judgment:
-            llm_score = 0.75
-        elif "MOSTLY_WRONG" in judgment:
-            llm_score = 0.25
-        elif "INCORRECT" in judgment:
-            llm_score = 0.0
-        elif "PARTIAL" in judgment:
-            llm_score = 0.5
-        elif "CORRECT" in judgment:
+        # Binary scoring (0 or 1 only)
+        if "CORRECT" in judgment and "INCORRECT" not in judgment:
             llm_score = 1.0
         else:
-            llm_score = 0.0  # Unknown response treated as incorrect
+            llm_score = 0.0
 
     except Exception as e:
         print(f"LLM scoring failed: {e}, falling back to F1")
