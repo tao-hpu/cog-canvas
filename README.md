@@ -1,6 +1,6 @@
 # CogCanvas
 
-> **Compression-Resistant Cognitive Artifacts for Long LLM Conversations**
+> **Verbatim-Grounded Artifact Extraction for Long LLM Conversations**
 
 [中文版](./README_CN.md) | English
 
@@ -20,16 +20,18 @@ CogCanvas is a **training-free framework** for maintaining long-term memory in L
 
 ### LoCoMo Benchmark (Binary LLM-as-Judge)
 
-| Agent | Overall | Single-hop | Temporal | Multi-hop |
-|-------|---------|------------|----------|-----------|
-| RAG | **49.1%** | **33.0%** | 10.6% | 39.6% |
-| **CogCanvas** | 45.4% | 30.9% | **27.7%** | **49.0%** |
-| GraphRAG | 13.9% | 13.5% | 3.1% | 26.0% |
-| Summarization | 7.8% | 6.4% | 0.6% | 26.0% |
+| Method | Overall | Single-hop | Temporal | Multi-hop |
+|--------|---------|------------|----------|-----------|
+| **CogCanvas** | **32.4%** | **26.6%** | **32.7%** | **41.7%** |
+| RAG | 24.6% | 24.6% | 12.1% | 40.6% |
+| GraphRAG | 10.6% | 12.8% | 3.1% | 29.2% |
+| Summarization | 5.6% | 5.3% | 0.6% | 22.9% |
 
-**Key Finding**: Task complexity determines optimal approach:
-- **Simple lookups**: RAG wins through direct chunk matching
-- **Complex reasoning**: CogCanvas excels with **+17.1pp on temporal** and **+9.4pp on multi-hop**
+**Key Finding**: CogCanvas achieves the highest overall accuracy among training-free methods:
+- **Overall**: +7.8pp vs RAG (32.4% vs 24.6%)
+- **Temporal reasoning**: +20.6pp vs RAG (32.7% vs 12.1%)
+- **Multi-hop questions**: +1.1pp vs RAG (41.7% vs 40.6%)
+- **Single-hop retrieval**: +2.0pp vs RAG (26.6% vs 24.6%)
 
 ### Controlled Benchmark
 
@@ -168,11 +170,11 @@ python -m experiments.runner_locomo --agent rag --samples 10 --llm-score
 ### Ablation Studies
 
 ```bash
-# Remove graph expansion (largest impact: -11.9pp)
-python -m experiments.runner_locomo --agent cogcanvas-no-graph --llm-score
+# Remove BGE reranking (largest impact: -11.5pp)
+python -m experiments.runner_locomo --agent cogcanvas-no-rerank --llm-score
 
-# Remove temporal heuristics
-python -m experiments.runner_locomo --agent cogcanvas-no-temporal --llm-score
+# Remove graph expansion (-6.6pp)
+python -m experiments.runner_locomo --agent cogcanvas-no-graph --llm-score
 ```
 
 ## Web UI

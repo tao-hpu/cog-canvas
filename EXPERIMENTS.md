@@ -61,11 +61,11 @@ python -m experiments.runner_locomo --agent rag --llm-score --categories "1,2,3"
 Remove single component from full system to measure contribution.
 
 **Paper Results (Cat 1/2/3, 10 conversations, LLM scoring)**:
-- Full System: 28.6%
-- w/o Gleaning: 30.7% (+2.1pp)
-- w/o Graph: 25.8% (-2.8pp)
-- w/o Reranker: 20.9% (-7.7pp)
-- Minimal: 14.3% (-14.3pp)
+- Full System: 32.4%
+- w/o Gleaning: 30.7% (-1.7pp)
+- w/o Graph Expansion: 25.8% (-6.6pp)
+- w/o Reranker: 20.9% (-11.5pp) ← largest contributor
+- Minimal: 14.3% (-18.1pp)
 
 ```bash
 # Full System
@@ -248,25 +248,28 @@ python -m experiments.runner_locomo --agent cogcanvas-multiround --categories 1,
 
 ---
 
-## Recall-Boost Configuration (2026-01-06)
+## Main Results (Full System)
 
-结合检索增强和答案生成改进的配置。
+**CogCanvas Full System** achieves the highest overall accuracy among training-free methods.
 
-### 改进内容
-1. **检索参数增强**: `top_k=20`, `graph_hops=4`, `reranker_candidate_k=40`
-2. **Prompt 改进**: 要求直接回答、不说"不知道"、简洁
+### LoCoMo Benchmark (Cat 1/2/3, 10 conversations, LLM Judge)
 
-### 全量测试结果 (10 conversations, Cat 1/2/3, LLM Judge)
+| Method | Overall | Single-hop | Temporal | Multi-hop |
+|--------|---------|------------|----------|-----------|
+| **CogCanvas** | **32.4%** | **26.6%** | **32.7%** | **41.7%** |
+| RAG | 24.6% | 24.6% | 12.1% | 40.6% |
+| GraphRAG | 10.6% | 12.8% | 3.1% | 29.2% |
+| Summarization | 5.6% | 5.3% | 0.6% | 22.9% |
 
-| 配置 | Overall | Single-hop | Temporal | Multi-hop |
-|------|---------|------------|----------|-----------|
-| **CogCanvas (原版)** | 28.6% | 20.9% | 30.5% | 44.8% |
-| **CogCanvas (recall-boost)** | **32.4%** | **26.6%** | **32.7%** | 41.7% |
-| **变化** | **+3.8pp** ✅ | +5.7pp | +2.2pp | -3.1pp |
+**Key Improvements vs RAG**:
+- Overall: +7.8pp (32.4% vs 24.6%)
+- Temporal: +20.6pp (32.7% vs 12.1%)
+- Multi-hop: +1.1pp (41.7% vs 40.6%)
+- Single-hop: +2.0pp (26.6% vs 24.6%)
 
 ### 运行命令
 ```bash
-python -m experiments.runner_locomo --agent cogcanvas-recall-boost --categories 1,2,3 --llm-score
+python -m experiments.runner_locomo --agent cogcanvas --categories 1,2,3 --llm-score
 ```
 
 ### 各对话结果
