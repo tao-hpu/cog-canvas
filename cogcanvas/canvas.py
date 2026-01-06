@@ -52,6 +52,8 @@ class Canvas:
         enable_temporal_heuristic: bool = True,  # New parameter for ablation
         reference_threshold: float = 0.5,  # Threshold for reference links
         causal_threshold: float = 0.45,  # Threshold for causal links
+        # Gleaning parameter (for ablation study)
+        enable_gleaning: bool = False,  # Disabled by default (minimal benefit on LoCoMo)
         # VAGE parameters
         enable_vage: bool = False,  # Enable Vulnerability-Aware Greedy Extraction
         vage_budget_k: int = 10,  # Maximum objects to keep per turn
@@ -77,6 +79,7 @@ class Canvas:
             enable_temporal_heuristic: Whether to use temporal proximity for causal linking (Rule 4)
             reference_threshold: Min cosine similarity for 'references' relation (default: 0.5)
             causal_threshold: Min cosine similarity for 'caused_by' relation (default: 0.45)
+            enable_gleaning: Enable second-pass extraction to catch missed entities (default: True)
             enable_vage: Enable VAGE (Vulnerability-Aware Greedy Extraction) for optimal selection
             vage_budget_k: Maximum objects to keep per extraction (only used if enable_vage=True)
             vage_config: Custom VAGE configuration (optional)
@@ -99,6 +102,7 @@ class Canvas:
         self.enable_temporal_heuristic = enable_temporal_heuristic
         self.reference_threshold = reference_threshold
         self.causal_threshold = causal_threshold
+        self.enable_gleaning = enable_gleaning
 
         # Initialize LLM backend
         self._backend = self._init_backend(llm_backend)
@@ -239,7 +243,7 @@ class Canvas:
 
         # Use LLM backend for extraction (real or mock)
         existing = list(self._objects.values())
-        # Pass turn_id and session_datetime for temporal extraction
+        # Pass turn_id, session_datetime, and enable_gleaning for temporal extraction
         objects = self._backend.extract_objects(
             user,
             assistant,
@@ -247,6 +251,7 @@ class Canvas:
             turn_id=self._turn_counter,
             enable_temporal_fallback=True,
             session_datetime=session_datetime,
+            enable_gleaning=self.enable_gleaning,
         )
 
         # Compute embeddings for extracted objects
@@ -1328,24 +1333,27 @@ class Canvas:
                             self.link(new_obj.id, existing_obj.id, "caused_by")
 
             # Rule 4: DECISIONs caused by recent KEY_FACTs/REMINDERS (Temporal Heuristic)
-            # This is critical for catching "Budget $500" -> "Choose AWS" links where semantic overlap is low.
+            # Only link if there's keyword overlap to avoid noise from unrelated constraints.
+            # Reduced window from 5 to 2 turns, and require keyword overlap for precision.
             if enable_temporal_heuristic and new_obj.type == ObjectType.DECISION:
                 recent_constraints = []
-                for (
-                    existing_obj
-                ) in existing:  # Use raw existing list, embeddings not needed
+                for existing_obj in existing:
                     if (
                         existing_obj.type in (ObjectType.KEY_FACT, ObjectType.REMINDER)
-                        and existing_obj.turn_id >= new_obj.turn_id - 5
+                        and existing_obj.turn_id >= new_obj.turn_id - 2  # Tighter window
                         and existing_obj.turn_id < new_obj.turn_id
                     ):
-                        recent_constraints.append(existing_obj)
+                        # Require keyword overlap to reduce noise
+                        existing_keywords = get_keywords(existing_obj.content)
+                        if existing_keywords and new_keywords:
+                            if not new_keywords.isdisjoint(existing_keywords):
+                                recent_constraints.append(existing_obj)
 
                 # Sort by recency (closest to decision first)
                 recent_constraints.sort(key=lambda x: x.turn_id, reverse=True)
 
-                # Link top 3
-                for constraint in recent_constraints[:3]:
+                # Link top 2 (reduced from 3)
+                for constraint in recent_constraints[:2]:
                     self.link(new_obj.id, constraint.id, "caused_by")
 
             # Rule 5: EVENTs reference PERSON_ATTRIBUTEs (event involves a person)

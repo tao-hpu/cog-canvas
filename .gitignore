@@ -84,6 +84,9 @@ results/
 !package.json
 !pyproject.json
 
+# Log files
+*.log
+
 # Experiment cache (contains API keys in settings.yaml)
 experiments/cache/
 

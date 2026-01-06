@@ -11,6 +11,7 @@ Key behavior:
 
 from typing import List, Optional
 import time
+import re
 
 from experiments.runner import Agent, AgentResponse
 from experiments.data_gen import ConversationTurn
@@ -39,12 +40,12 @@ class CogCanvasAgent(Agent):
         extractor_model: str = None,  # None = load from env (EXTRACTOR_MODEL)
         answer_model: str = None,  # None = load from env (ANSWER_MODEL)
         embedding_model: str = None,  # None = load from env
-        retrieval_top_k: int = 10,
+        retrieval_top_k: int = 15,  # Increased from 10 to 15 for better recall
         enable_graph_expansion: bool = True,  # New flag for ablation
         graph_hops: int = 1,  # Number of hops for graph expansion (default 1 for backward compat)
         use_reranker: bool = False,  # Disable reranking to test baseline speed
         reranker_type: str = "api",  # Use BGE reranker API (MUCH faster than LLM)
-        reranker_candidate_k: int = 20,  # Retrieve top-20 before reranking to top-k
+        reranker_candidate_k: int = 30,  # Increased from 20 to 30 for better recall
         use_real_llm_for_answer: bool = True,  # Default to True for fair comparison
         # Ablation Parameters
         enable_temporal_heuristic: bool = True,
@@ -57,6 +58,8 @@ class CogCanvasAgent(Agent):
         # Graph Construction Parameters
         reference_threshold: float = 0.5,  # Threshold for reference links
         causal_threshold: float = 0.45,  # Threshold for causal links
+        # Gleaning Parameter (for ablation)
+        enable_gleaning: bool = False,  # Disabled by default (minimal benefit on LoCoMo)
         # VAGE Parameters
         enable_vage: bool = False,  # Enable Vulnerability-Aware Greedy Extraction
         use_learned_vage: bool = False,  # Use learned vulnerability model
@@ -66,6 +69,17 @@ class CogCanvasAgent(Agent):
         # Query Expansion Parameters
         use_query_expansion: bool = False,  # Enable multi-query retrieval (Perplexity-style)
         query_expansion_n: int = 3,  # Number of sub-queries to generate
+        # Multi-Round Retrieval Parameters
+        use_multi_round: bool = False,  # Enable multi-round iterative retrieval
+        max_retrieval_rounds: int = 3,  # Maximum number of retrieval rounds
+        confidence_threshold: float = 0.7,  # Confidence threshold to stop iteration
+        # Query Routing Parameters
+        use_query_routing: bool = False,  # Enable query complexity routing (simple->single, complex->multi)
+        # Smart Routing Parameters (retrieval-result-based routing)
+        use_smart_routing: bool = False,  # Enable smart routing based on retrieval quality
+        smart_routing_high_score: float = 0.85,  # Threshold for "high confidence" direct answer
+        smart_routing_spread_threshold: float = 0.15,  # Score spread threshold for multi-entity detection
+        smart_routing_low_score: float = 0.5,  # Threshold for "low confidence" query expansion
         # Cache Parameters
         storage_path: str = None,  # Path to cache Canvas state
     ):
@@ -76,7 +90,7 @@ class CogCanvasAgent(Agent):
             extractor_model: Model for Canvas extraction (default: EXTRACTOR_MODEL)
             answer_model: Model for answering questions (default: ANSWER_MODEL)
             embedding_model: Model for embeddings
-            retrieval_top_k: Number of objects to retrieve (default: 10)
+            retrieval_top_k: Number of objects to retrieve (default: 15)
             enable_graph_expansion: Whether to use N-hop graph expansion (Ablation)
             graph_hops: Number of hops for graph expansion (default: 1)
             use_reranker: Enable reranking after retrieval
@@ -88,6 +102,7 @@ class CogCanvasAgent(Agent):
             filter_candidate_k: Number of candidates to retrieve before filtering
             reference_threshold: Min cosine similarity for 'references' relation
             causal_threshold: Min cosine similarity for 'caused_by' relation
+            enable_gleaning: Enable second-pass extraction (LightRAG-inspired, +2x LLM calls)
             enable_vage: Enable VAGE for optimal artifact selection
             use_learned_vage: Use learned vulnerability model instead of heuristics
             vage_budget_k: Max objects to keep per turn when VAGE is enabled
@@ -95,6 +110,14 @@ class CogCanvasAgent(Agent):
             vage_verbose: Print detailed VAGE progress logs
             use_query_expansion: Enable Perplexity-style multi-query retrieval
             query_expansion_n: Number of sub-queries to generate (default: 3)
+            use_multi_round: Enable multi-round iterative retrieval
+            max_retrieval_rounds: Maximum number of retrieval rounds (default: 3)
+            confidence_threshold: Confidence threshold to stop iteration (default: 0.7)
+            use_query_routing: Enable query complexity routing (simple->single-round, complex->multi-round)
+            use_smart_routing: Enable smart routing based on retrieval result quality
+            smart_routing_high_score: Score threshold for direct answer (default: 0.85)
+            smart_routing_spread_threshold: Score spread threshold for multi-entity detection (default: 0.15)
+            smart_routing_low_score: Score threshold for query expansion (default: 0.5)
         """
         import os
         from dotenv import load_dotenv
@@ -135,6 +158,9 @@ class CogCanvasAgent(Agent):
         self.reference_threshold = reference_threshold
         self.causal_threshold = causal_threshold
 
+        # Gleaning config
+        self.enable_gleaning = enable_gleaning
+
         # VAGE config
         self.enable_vage = enable_vage
         self.use_learned_vage = use_learned_vage
@@ -145,6 +171,20 @@ class CogCanvasAgent(Agent):
         # Query Expansion config
         self.use_query_expansion = use_query_expansion
         self.query_expansion_n = query_expansion_n
+
+        # Multi-Round Retrieval config
+        self.use_multi_round = use_multi_round
+        self.max_retrieval_rounds = max_retrieval_rounds
+        self.confidence_threshold = confidence_threshold
+
+        # Query Routing config
+        self.use_query_routing = use_query_routing
+
+        # Smart Routing config (retrieval-result-based routing)
+        self.use_smart_routing = use_smart_routing
+        self.smart_routing_high_score = smart_routing_high_score
+        self.smart_routing_spread_threshold = smart_routing_spread_threshold
+        self.smart_routing_low_score = smart_routing_low_score
 
         # Cache config
         self.storage_path = storage_path
@@ -249,6 +289,14 @@ class CogCanvasAgent(Agent):
             parts.append("Filter")
         if self.use_reranker:
             parts.append("Rerank")
+        if self.use_multi_round:
+            parts.append(f"MultiRound{self.max_retrieval_rounds}")
+        if self.use_query_expansion:
+            parts.append("QueryExp")
+        if self.use_query_routing:
+            parts.append("Routed")
+        if self.use_smart_routing:
+            parts.append("SmartRoute")
 
         config_str = "+".join(parts) if parts else "Baseline"
         return f"CogCanvas({config_str})"
@@ -261,6 +309,7 @@ class CogCanvasAgent(Agent):
             enable_temporal_heuristic=self.enable_temporal_heuristic,
             reference_threshold=self.reference_threshold,
             causal_threshold=self.causal_threshold,
+            enable_gleaning=self.enable_gleaning,
             enable_vage=self.enable_vage,
             use_learned_vage=self.use_learned_vage,
             vage_budget_k=self.vage_budget_k,
@@ -589,61 +638,277 @@ class CogCanvasAgent(Agent):
         """
         Expand a complex question into multiple sub-queries (Perplexity-style).
 
+        Generates 3 different types of queries:
+        1. Direct factual lookup - Focuses on extracting key entities and facts
+        2. Temporal/contextual query - Focuses on time, context, and circumstances
+        3. Related entities query - Focuses on related people, places, and background
+
         This helps with:
-        1. Complex reasoning questions that need multiple perspectives
-        2. Questions requiring both factual recall and inference
-        3. Commonsense questions that need related context
+        - Complex reasoning questions that need multiple perspectives
+        - Questions requiring both factual recall and inference
+        - Commonsense questions that need related context
 
         Args:
             question: Original question
-            n: Number of sub-queries to generate
+            n: Number of sub-queries to generate (default: 3)
             verbose: Verbosity level
 
         Returns:
-            List of queries (original + expanded)
+            List of queries (original + expanded). Returns [question] if expansion fails.
         """
-        if not self._client:
+        import json
+
+        # Use answer client if available, otherwise extractor client
+        client = self._answer_client or self._client
+        if not client:
+            if verbose >= 2:
+                print("        [Query Expansion] No LLM client available, using original query only")
             return [question]
 
-        prompt = f"""Given this question about a conversation, generate {n-1} alternative search queries that would help find relevant information.
+        prompt = f"""You are a search query expansion expert. Your task is to generate diverse search queries that will help retrieve relevant information to answer the original question.
 
 Original question: {question}
 
-Generate queries that:
-1. Rephrase the question with different keywords
-2. Ask for background/context information needed
-3. Break down complex questions into simpler parts
+Generate exactly {n} different search queries that would help answer this question. Focus on different aspects:
 
-Return ONLY the queries, one per line, no numbering or explanation.
+1. **Direct factual lookup**: Rephrase the question to focus on extracting specific facts, entities, or attributes mentioned directly in the conversation.
+
+2. **Temporal/contextual query**: Focus on time-related information, when things happened, the sequence of events, or the context/circumstances around the topic.
+
+3. **Related entities query**: Focus on finding related people, places, relationships, or background information that could help answer the question.
+
+Return your response as a JSON array with exactly {n} queries. Example format:
+["query about direct facts", "query about timing or context", "query about related entities"]
+
+IMPORTANT:
+- Each query should be concise (under 50 words)
+- Each query should approach the question from a different angle
+- Only return the JSON array, nothing else
 """
 
         try:
             response = call_llm_with_retry(
-                client=self._client,
-                model=self.extractor_model,
+                client=client,
+                model=self.answer_model,  # Use answer model for faster response
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=150,
-                temperature=0.3,  # Slight variation
+                max_tokens=300,
+                temperature=0.3,  # Slight variation for diversity
             )
 
-            # Parse response into queries
-            sub_queries = [q.strip() for q in response.strip().split('\n') if q.strip()]
-            # Always include original query first
-            all_queries = [question] + sub_queries[:n-1]
+            # Try to parse JSON response
+            response_text = response.strip()
 
+            # Handle potential markdown code blocks
+            if response_text.startswith("```"):
+                # Extract content between code blocks
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block or (not line.startswith("```") and "[" in response_text):
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines).strip()
+
+            # Find JSON array in the response
+            start_idx = response_text.find("[")
+            end_idx = response_text.rfind("]") + 1
+            if start_idx != -1 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx]
+                sub_queries = json.loads(json_str)
+
+                # Validate that we got a list of strings
+                if isinstance(sub_queries, list) and all(isinstance(q, str) for q in sub_queries):
+                    # Always include original query first, then add expanded queries
+                    all_queries = [question] + [q.strip() for q in sub_queries if q.strip()]
+
+                    if verbose >= 2:
+                        print(f"        [Query Expansion] Generated {len(all_queries)} queries:")
+                        for i, q in enumerate(all_queries):
+                            print(f"          {i+1}. {q[:80]}{'...' if len(q) > 80 else ''}")
+
+                    return all_queries
+
+            # If JSON parsing failed, try line-by-line parsing as fallback
             if verbose >= 2:
-                print(f"        [Query Expansion] {len(all_queries)} queries: {all_queries}")
+                print("        [Query Expansion] JSON parsing failed, trying line parsing")
 
-            return all_queries
+            sub_queries = []
+            for line in response_text.split('\n'):
+                line = line.strip()
+                # Remove numbering, bullets, quotes
+                line = line.lstrip('0123456789.-) "\'')
+                line = line.rstrip('"\'')
+                if line and len(line) > 10:  # Minimum query length
+                    sub_queries.append(line)
 
+            if sub_queries:
+                all_queries = [question] + sub_queries[:n]
+                if verbose >= 2:
+                    print(f"        [Query Expansion] Parsed {len(all_queries)} queries from text")
+                return all_queries
+
+            # Fallback to original query
+            if verbose >= 1:
+                print("        [Query Expansion] Could not parse response, using original query")
+            return [question]
+
+        except json.JSONDecodeError as e:
+            if verbose >= 1:
+                print(f"        [Query Expansion] JSON decode error: {e}, using original query")
+            return [question]
         except Exception as e:
             if verbose >= 1:
                 print(f"        [Query Expansion] Failed: {e}, using original query")
             return [question]
 
+    def _check_answer_confidence(self, question: str, context: str, answer: str, verbose: int = 0) -> float:
+        """
+        Let LLM judge if the current context is sufficient to answer the question.
+
+        Returns a confidence score between 0 and 1.
+        - High score (>=0.7): Context has enough information
+        - Low score (<0.7): Missing key information, need more retrieval
+
+        Args:
+            question: The original question
+            context: Current retrieved context
+            answer: Draft answer generated from context
+            verbose: Verbosity level
+
+        Returns:
+            Confidence score (0-1)
+        """
+        answer_client = self._answer_client or self._client
+        if not answer_client:
+            return 1.0  # No LLM, assume confident
+
+        prompt = f"""You are a STRICT evaluator checking if retrieved context can DEFINITIVELY answer a question.
+
+## Question
+{question}
+
+## Retrieved Context
+{context}
+
+## Draft Answer
+{answer}
+
+## Scoring Guide (BE STRICT)
+- 0.0-0.2: Context is completely irrelevant or missing
+- 0.2-0.4: Context is partially relevant but missing KEY details (dates, names, specifics)
+- 0.4-0.6: Context has some relevant info but answer requires GUESSING or INFERENCE
+- 0.6-0.8: Context supports the answer but minor details might be uncertain
+- 0.8-1.0: Context DIRECTLY and EXPLICITLY contains the answer with clear evidence
+
+## IMPORTANT
+- If the answer contains "I think", "probably", "might", "could be" → score < 0.5
+- If specific dates/numbers/names in the answer are NOT in the context → score < 0.4
+- If the answer is a guess based on general knowledge → score < 0.3
+- ONLY give score >= 0.7 if the context EXPLICITLY contains the exact answer
+
+Return ONLY a number (e.g., 0.35), nothing else."""
+
+        try:
+            response = call_llm_with_retry(
+                client=answer_client,
+                model=self.answer_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0,
+            )
+
+            # Parse the confidence score
+            score_str = response.strip()
+            # Handle cases like "0.8" or "0.85" or just "0"
+            confidence = float(score_str)
+            confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
+
+            if verbose >= 2:
+                print(f"        [Confidence Check] Score: {confidence:.2f}")
+
+            return confidence
+
+        except (ValueError, Exception) as e:
+            if verbose >= 1:
+                print(f"        [Confidence Check] Failed to parse: {e}, defaulting to 0.5")
+            return 0.5  # Default to uncertain if parsing fails
+
+    def _generate_followup_query(self, question: str, context: str, answer: str, verbose: int = 0) -> str:
+        """
+        Generate a follow-up query to retrieve missing information.
+
+        Based on the current context and draft answer, identify what information
+        is still needed and generate a targeted search query.
+
+        Args:
+            question: The original question
+            context: Current retrieved context
+            answer: Draft answer (may be incomplete)
+            verbose: Verbosity level
+
+        Returns:
+            A follow-up search query string
+        """
+        answer_client = self._answer_client or self._client
+        if not answer_client:
+            return question  # Fallback to original question
+
+        prompt = f"""You are helping to find missing information to answer a question.
+
+## Original Question
+{question}
+
+## Currently Retrieved Context
+{context}
+
+## Current Answer Attempt
+{answer}
+
+## Task
+The current context may not have enough information to fully answer the question.
+Analyze what specific information is MISSING and generate a NEW search query to find it.
+
+Focus on:
+- Missing dates, times, or temporal information
+- Missing names, places, or specific entities
+- Missing causal relationships or reasons
+- Missing details that would complete the answer
+
+Generate a search query that is DIFFERENT from the original question and targets the missing information.
+Return ONLY the search query, nothing else."""
+
+        try:
+            response = call_llm_with_retry(
+                client=answer_client,
+                model=self.answer_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0.3,  # Slight variation for diversity
+            )
+
+            followup_query = response.strip()
+
+            if verbose >= 2:
+                print(f"        [Follow-up Query] {followup_query}")
+
+            return followup_query if followup_query else question
+
+        except Exception as e:
+            if verbose >= 1:
+                print(f"        [Follow-up Query] Failed: {e}, using original question")
+            return question
+
     def _retrieve_with_expansion(self, question: str, top_k: int, verbose: int = 0):
         """
-        Retrieve using multiple expanded queries and merge results.
+        Retrieve using multiple expanded queries and merge results (Perplexity-style).
+
+        For each expanded query:
+        1. Perform retrieval with the query
+        2. Merge results with deduplication
+        3. When same object appears multiple times, keep the HIGHEST score
 
         Args:
             question: Original question
@@ -651,22 +916,30 @@ Return ONLY the queries, one per line, no numbering or explanation.
             verbose: Verbosity level
 
         Returns:
-            Merged RetrievalResult
+            Merged RetrievalResult with deduplicated objects sorted by score
         """
         from cogcanvas.models import RetrievalResult
+        import time as _time
+
+        retrieval_start = _time.time()
 
         # Generate expanded queries
         queries = self._expand_query(question, self.query_expansion_n, verbose)
 
-        # Retrieve for each query
-        all_objects = []
-        all_scores = []
-        seen_ids = set()
+        if verbose >= 2:
+            print(f"        [Retrieve+Expansion] Using {len(queries)} queries")
 
-        # Retrieve fewer per query, merge to final top_k
-        per_query_k = max(top_k // len(queries) + 2, 5)
+        # Track objects by ID -> (object, max_score, hit_count)
+        # This allows us to:
+        # 1. Deduplicate by obj.id
+        # 2. Keep the highest score when an object is retrieved by multiple queries
+        # 3. Track how many queries hit this object (for potential boosting)
+        object_map = {}  # obj.id -> {"obj": obj, "max_score": float, "hit_count": int}
 
-        for query in queries:
+        # Retrieve more per query to ensure good coverage
+        per_query_k = max(top_k // len(queries) + 3, 8)
+
+        for query_idx, query in enumerate(queries):
             result = self._canvas.retrieve(
                 query=query,
                 top_k=per_query_k,
@@ -675,33 +948,193 @@ Return ONLY the queries, one per line, no numbering or explanation.
                 max_hops=self.graph_hops,
             )
 
-            # Merge with deduplication
-            for obj, score in zip(result.objects, result.scores or [0.5] * len(result.objects)):
-                if obj.id not in seen_ids:
-                    all_objects.append(obj)
-                    all_scores.append(score)
-                    seen_ids.add(obj.id)
+            # Merge results, keeping max score for duplicates
+            scores = result.scores or [0.5] * len(result.objects)
+            for obj, score in zip(result.objects, scores):
+                if obj.id in object_map:
+                    # Object already seen - update max score and hit count
+                    if score > object_map[obj.id]["max_score"]:
+                        object_map[obj.id]["max_score"] = score
+                    object_map[obj.id]["hit_count"] += 1
+                else:
+                    # New object
+                    object_map[obj.id] = {
+                        "obj": obj,
+                        "max_score": score,
+                        "hit_count": 1,
+                    }
 
-        # Sort by score and truncate
+            if verbose >= 3:
+                print(f"          Query {query_idx + 1}: Retrieved {len(result.objects)} objects")
+
+        # Convert map to lists and apply hit count boosting
+        # Objects retrieved by multiple queries get a small score boost
+        all_objects = []
+        all_scores = []
+
+        for obj_id, data in object_map.items():
+            obj = data["obj"]
+            score = data["max_score"]
+            hit_count = data["hit_count"]
+
+            # Apply mild boosting for objects hit by multiple queries
+            # This rewards objects that are relevant to multiple aspects of the question
+            if hit_count > 1:
+                # Boost by 5% per additional hit (capped at 15%)
+                boost_factor = 1.0 + min(0.05 * (hit_count - 1), 0.15)
+                score = min(score * boost_factor, 1.0)  # Cap at 1.0
+
+            all_objects.append(obj)
+            all_scores.append(score)
+
+        # Sort by score (descending) and truncate
         if all_scores:
-            sorted_pairs = sorted(zip(all_objects, all_scores), key=lambda x: x[1], reverse=True)
+            sorted_pairs = sorted(
+                zip(all_objects, all_scores),
+                key=lambda x: x[1],
+                reverse=True
+            )
             all_objects = [p[0] for p in sorted_pairs]
             all_scores = [p[1] for p in sorted_pairs]
 
+        retrieval_ms = (_time.time() - retrieval_start) * 1000
+
+        if verbose >= 2:
+            multi_hit_count = sum(1 for data in object_map.values() if data["hit_count"] > 1)
+            print(f"        [Retrieve+Expansion] {len(all_objects)} unique objects, {multi_hit_count} multi-hit, {retrieval_ms:.0f}ms")
+
         return RetrievalResult(
-            objects=all_objects[:top_k * 2],  # Keep more for reranking
+            objects=all_objects[:top_k * 2],  # Keep more for potential reranking
             scores=all_scores[:top_k * 2],
             query=question,
-            retrieval_time=0,
+            retrieval_time=retrieval_ms / 1000,  # Convert to seconds
         )
+
+    def _classify_query_complexity(self, question: str) -> str:
+        """
+        Classify question complexity using LLM for query routing.
+
+        Returns 'simple' or 'complex' to determine retrieval strategy:
+        - 'simple': Single-round retrieval (fast, for direct fact queries)
+        - 'complex': Multi-round retrieval (thorough, for reasoning questions)
+        """
+        # Use LLM to classify
+        prompt = f"""Classify this question as 'simple' or 'complex' for a memory retrieval system.
+
+Question: {question}
+
+Classification criteria:
+- SIMPLE: Direct fact lookup requiring ONE piece of information
+  Examples: "What is X's job?", "Where does X live?", "What is X's email?"
+
+- COMPLEX: Requires reasoning, inference, or connecting MULTIPLE facts
+  Examples: "Why did X decide to...?", "What would X prefer?", "When did X do Y after Z?"
+  Also complex: temporal ordering, cause-effect, preferences, hypotheticals
+
+Return ONLY one word: 'simple' or 'complex'"""
+
+        try:
+            client = self._answer_client or self._client
+            if client:
+                response = client.chat.completions.create(
+                    model=self.answer_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=10,
+                )
+                result = response.choices[0].message.content.strip().lower()
+                if 'complex' in result:
+                    return 'complex'
+                elif 'simple' in result:
+                    return 'simple'
+        except Exception as e:
+            pass  # Fall back to rule-based
+
+        # Fallback: rule-based classification
+        return self._classify_query_complexity_rules(question)
+
+    def _classify_query_complexity_rules(self, question: str) -> str:
+        """Rule-based fallback for query complexity classification."""
+        question_lower = question.lower()
+
+        # Complex indicators - patterns that suggest multi-hop reasoning
+        complex_patterns = [
+            r'\bwhy\b',                    # Causal questions
+            r'\bhow did\b',                # Process questions
+            r'\bbecause\b',                # Causal reasoning
+            r'\bled to\b',                 # Causal chain
+            r'\bresult(?:ed)? in\b',       # Consequence
+            r'\bbefore\b',                 # Temporal ordering
+            r'\bafter\b',                  # Temporal ordering
+            r'\bwhen did.*(?:after|before)\b',  # Complex temporal
+            r'\bwhat would\b',             # Hypothetical
+            r'\bwould.*prefer\b',          # Preference inference
+            r'\blikely to\b',              # Probability inference
+            r'\brelationship between\b',   # Multi-entity relationship
+            r'\bconnection\b',             # Linking entities
+            r'\binfluence[ds]?\b',         # Impact/influence
+            r'\baffect(?:ed|s)?\b',        # Impact
+            r'\bimpact\b',                 # Consequence
+            r'\bconsequence\b',            # Result
+        ]
+
+        # Check complex patterns
+        for pattern in complex_patterns:
+            if re.search(pattern, question_lower):
+                return 'complex'
+
+        # Long questions are typically complex (need more context)
+        word_count = len(question.split())
+        if word_count > 15:
+            return 'complex'
+
+        # Default to simple for short, direct queries
+        return 'simple'
 
     def answer_question(self, question: str, verbose: int = 0) -> AgentResponse:
         """
         Answer a recall question using canvas objects + retained history.
 
+        Supports four modes based on configuration:
+        1. Single-round retrieval (use_multi_round=False): Original behavior
+        2. Multi-round retrieval (use_multi_round=True): Iterative retrieval with confidence checking
+        3. Query routing (use_query_routing=True + use_multi_round=True): Route based on complexity
+        4. Smart routing (use_smart_routing=True): Route based on retrieval result quality
+
         Enhanced Two-Stage Retrieval:
         1. Coarse retrieval: Get top-K candidates (20-50)
         2. Fine-grained reranking: Rerank to top-N (5-10) using LLM or reranker
+        """
+        # Smart routing: analyze retrieval result first, then decide strategy
+        if self.use_smart_routing:
+            return self._answer_with_smart_routing(question, verbose)
+
+        # Query routing: classify complexity and route accordingly
+        if self.use_query_routing and self.use_multi_round:
+            complexity = self._classify_query_complexity(question)
+
+            if verbose >= 1:
+                q_preview = question[:50] + '...' if len(question) > 50 else question
+                print(f"        [Query Routing] '{q_preview}' -> {complexity}")
+
+            if complexity == 'simple':
+                # Simple questions: fast single-round retrieval
+                return self._answer_question_single_round(question, verbose)
+            else:
+                # Complex questions: thorough multi-round retrieval
+                return self._answer_question_multi_round(question, verbose)
+
+        # Standard routing based on use_multi_round flag
+        elif self.use_multi_round:
+            return self._answer_question_multi_round(question, verbose)
+        else:
+            return self._answer_question_single_round(question, verbose)
+
+    def _answer_question_single_round(self, question: str, verbose: int = 0) -> AgentResponse:
+        """
+        Original single-round retrieval logic.
+
+        This is the backward-compatible path when use_multi_round=False.
         """
         start_time = time.time()
 
@@ -820,6 +1253,206 @@ Return ONLY the queries, one per line, no numbering or explanation.
                     retrieval_result.scores[:3] if retrieval_result.scores else []
                 ),
             },
+        )
+
+    def _answer_question_multi_round(self, question: str, verbose: int = 0) -> AgentResponse:
+        """
+        Multi-round iterative retrieval logic.
+
+        Iteratively retrieves information until:
+        1. Confidence threshold is met, OR
+        2. Maximum rounds is reached
+
+        Each round:
+        1. Retrieve with current query
+        2. Generate draft answer
+        3. Check confidence
+        4. If not confident, generate follow-up query and continue
+        """
+        from cogcanvas.models import RetrievalResult
+
+        start_time = time.time()
+
+        # Adaptive top-k based on question type
+        effective_top_k = self._adaptive_top_k(question, self.retrieval_top_k)
+
+        # Track all retrieved objects across rounds (deduplicated)
+        all_objects = []
+        all_scores = []
+        seen_ids = set()
+
+        # Current query starts as the original question
+        current_query = question
+
+        # Track retrieval rounds
+        retrieval_rounds = 0
+        final_answer = None
+        final_confidence = 0.0
+
+        if verbose >= 1:
+            print(f"        [Multi-Round] Starting iterative retrieval (max_rounds={self.max_retrieval_rounds}, threshold={self.confidence_threshold})")
+
+        for round_num in range(self.max_retrieval_rounds):
+            retrieval_rounds = round_num + 1
+
+            if verbose >= 2:
+                print(f"        [Round {retrieval_rounds}] Query: {current_query[:80]}...")
+
+            # Step 1: Retrieve for current query
+            round_result = self._retrieve_single_round(
+                current_query, effective_top_k, exclude_ids=seen_ids, verbose=verbose
+            )
+
+            # Step 2: Merge results (deduplicated)
+            new_objects_count = 0
+            for obj in round_result.objects:
+                if obj.id not in seen_ids:
+                    all_objects.append(obj)
+                    # Use retrieval score if available, otherwise default
+                    score = 0.5
+                    if round_result.scores and len(round_result.scores) > len(all_objects) - 1:
+                        idx = round_result.objects.index(obj)
+                        if idx < len(round_result.scores):
+                            score = round_result.scores[idx]
+                    all_scores.append(score)
+                    seen_ids.add(obj.id)
+                    new_objects_count += 1
+
+            if verbose >= 2:
+                print(f"        [Round {retrieval_rounds}] New objects: {new_objects_count}, Total: {len(all_objects)}")
+
+            # Step 3: Build context from ALL retrieved objects so far
+            merged_result = RetrievalResult(
+                objects=all_objects,
+                scores=all_scores,
+                query=question,
+                retrieval_time=0,
+            )
+            canvas_context = self._canvas.inject(
+                merged_result,
+                format="compact",
+                max_tokens=5000,
+            )
+
+            # Step 4: Generate draft answer
+            draft_answer = self._extract_answer_from_context(
+                question, merged_result, canvas_context, verbose=0  # Suppress inner verbose
+            )
+
+            # Step 5: Check confidence
+            confidence = self._check_answer_confidence(
+                question, canvas_context, draft_answer, verbose=verbose
+            )
+            final_answer = draft_answer
+            final_confidence = confidence
+
+            if verbose >= 2:
+                print(f"        [Round {retrieval_rounds}] Confidence: {confidence:.2f}")
+
+            # Step 6: If confident enough, stop
+            if confidence >= self.confidence_threshold:
+                if verbose >= 1:
+                    print(f"        [Multi-Round] Converged at round {retrieval_rounds} (confidence={confidence:.2f})")
+                break
+
+            # Step 7: If not confident and not last round, generate follow-up query
+            if round_num < self.max_retrieval_rounds - 1:
+                current_query = self._generate_followup_query(
+                    question, canvas_context, draft_answer, verbose=verbose
+                )
+
+        # Build final response
+        latency = (time.time() - start_time) * 1000
+
+        if verbose >= 1:
+            print(f"        [Multi-Round] Completed in {retrieval_rounds} rounds, {len(all_objects)} objects, {latency:.0f}ms")
+
+        return AgentResponse(
+            answer=final_answer,
+            latency_ms=latency,
+            metadata={
+                "num_objects_retrieved": len(all_objects),
+                "graph_expansion": self.enable_graph_expansion,
+                "graph_hops": self.graph_hops if self.enable_graph_expansion else 0,
+                "reranking_applied": self.use_reranker,
+                "retrieval_scores": all_scores[:3] if all_scores else [],
+                "multi_round": True,
+                "retrieval_rounds": retrieval_rounds,
+                "final_confidence": final_confidence,
+            },
+        )
+
+    def _retrieve_single_round(
+        self,
+        query: str,
+        top_k: int,
+        exclude_ids: set = None,
+        verbose: int = 0
+    ):
+        """
+        Perform a single round of retrieval.
+
+        This is a helper for multi-round retrieval that handles:
+        - Query expansion (if enabled)
+        - Reranking (if enabled)
+        - Exclusion of already-retrieved objects
+
+        Args:
+            query: The query string
+            top_k: Number of objects to retrieve
+            exclude_ids: Set of object IDs to exclude (already retrieved)
+            verbose: Verbosity level
+
+        Returns:
+            RetrievalResult with retrieved objects
+        """
+        from cogcanvas.models import RetrievalResult
+
+        exclude_ids = exclude_ids or set()
+
+        # Use query expansion if enabled
+        if self.use_query_expansion:
+            retrieval_result = self._retrieve_with_expansion(
+                query, self.reranker_candidate_k if self.use_reranker else top_k, verbose
+            )
+        else:
+            # Standard retrieval
+            retrieval_result = self._canvas.retrieve(
+                query=query,
+                top_k=self.reranker_candidate_k if self.use_reranker else top_k,
+                method=self.retrieval_method,
+                include_related=self.enable_graph_expansion,
+                max_hops=self.graph_hops,
+            )
+
+        # Apply N-hop graph expansion if needed
+        if self.enable_graph_expansion and self.graph_hops > 1:
+            retrieval_result = self._apply_multihop_expansion(retrieval_result, query)
+
+        # Apply reranking if enabled
+        if self.use_reranker and self._reranker and len(retrieval_result.objects) > 0:
+            retrieval_result = self._apply_reranking(retrieval_result, query)
+
+        # Filter out already-seen objects and truncate
+        filtered_objects = []
+        filtered_scores = []
+        for i, obj in enumerate(retrieval_result.objects):
+            if obj.id not in exclude_ids:
+                filtered_objects.append(obj)
+                if retrieval_result.scores and i < len(retrieval_result.scores):
+                    filtered_scores.append(retrieval_result.scores[i])
+                else:
+                    filtered_scores.append(0.5)
+
+        # Truncate to top_k
+        filtered_objects = filtered_objects[:top_k]
+        filtered_scores = filtered_scores[:top_k]
+
+        return RetrievalResult(
+            objects=filtered_objects,
+            scores=filtered_scores,
+            query=query,
+            retrieval_time=retrieval_result.retrieval_time if hasattr(retrieval_result, 'retrieval_time') else 0,
         )
 
     def _apply_multihop_expansion(self, retrieval_result, query: str):
@@ -1048,28 +1681,8 @@ Your goal is to answer questions by connecting discrete facts and tracking chang
 ## Answer
 """
             elif self.prompt_style == "cot":
-                # Chain-of-Thought Prompt (The SOTA one)
-                prompt = f"""You are an expert reasoning agent with access to a structured memory graph (CogCanvas).
-Your goal is to answer the user's question by connecting discrete facts from the memory.
-
-## Memory Context (Retrieved Nodes)
-{canvas_context}
-
-## Instructions
-1. Analyze the retrieved nodes. Look for "Constraints" (KeyFacts/Reminders) and "Decisions".
-2. Even if the nodes are not explicitly linked, use your reasoning to infer causal relationships (e.g., "Budget is $500" likely caused "Choose Cheap Hosting").
-3. Synthesize a complete answer that explains WHY things happened.
-4. **CRITICAL for temporal questions**: When the question asks "when", use the ABSOLUTE DATE shown in [Date: ...] brackets, NOT relative terms like "yesterday" or "last week".
-
-## Question
-{question}
-
-## Answer
-"""
-            else:
-                # Direct Prompt (The Baseline)
-                prompt = f"""Answer the question based on the provided CogCanvas memory context.
-If the information is not available, say "I don't have enough information."
+                # Chain-of-Thought Prompt - Optimized for Direct Answers
+                prompt = f"""Answer this question based on the retrieved memory context.
 
 ## Memory Context
 {canvas_context}
@@ -1077,8 +1690,41 @@ If the information is not available, say "I don't have enough information."
 ## Question
 {question}
 
-## Answer
-Provide a concise, direct answer."""
+## RULES (MUST FOLLOW):
+1. **DIRECT ANSWER FIRST**: Start with the answer in the first sentence.
+   - "when" question -> Start with the date (e.g., "May 15, 2023")
+   - "who" question -> Start with the name (e.g., "Sarah")
+   - "what" question -> Start with the exact thing (e.g., "Adoption agencies")
+   - "where" question -> Start with the place (e.g., "Central Park")
+   - yes/no question -> Start with "Yes" or "No"
+
+2. **NEVER SAY**: "no information", "not mentioned", "I don't know", "context does not"
+
+3. **ALWAYS ANSWER**: Give your best answer based on context. For multi-hop, connect facts.
+
+4. **USE ABSOLUTE DATES**: Use dates from [Date: ...] brackets, not "yesterday" or "last week".
+
+5. **BE CONCISE**: 1-2 sentences max.
+
+## Answer:
+"""
+            else:
+                # Direct Prompt (The Baseline) - Optimized for Direct Answers
+                prompt = f"""Answer the question based on the memory context below.
+
+## Memory Context
+{canvas_context}
+
+## Question
+{question}
+
+## RULES:
+1. Start with the direct answer (date for "when", name for "who", etc.)
+2. Never say "no information found" - always give your best answer based on available context
+3. Be concise: 1-3 sentences max
+
+## Answer:
+"""
 
             try:
                 llm_start = time.time()
@@ -1110,6 +1756,384 @@ Provide a concise, direct answer."""
                 answers.append(obj.content)
 
         return " | ".join(answers)
+
+    # =========================================================================
+    # Smart Routing Methods (Retrieval-Result-Based Routing)
+    # =========================================================================
+
+    def _analyze_retrieval_quality(self, question: str, retrieval_result) -> dict:
+        """
+        Analyze retrieval result quality and return features for routing decision.
+
+        Args:
+            question: The original question
+            retrieval_result: RetrievalResult from Canvas.retrieve()
+
+        Returns:
+            Dict with analysis features:
+            - top_score: Highest retrieval score
+            - avg_score: Average retrieval score
+            - score_spread: Difference between max and min scores
+            - is_temporal: Whether question contains temporal keywords
+            - is_multi_entity: Whether question suggests multiple entities
+            - num_results: Number of retrieved objects
+        """
+        scores = retrieval_result.scores or []
+
+        if not scores:
+            return {
+                "quality": "poor",
+                "strategy": "expand",
+                "top_score": 0.0,
+                "avg_score": 0.0,
+                "score_spread": 0.0,
+                "is_temporal": False,
+                "is_multi_entity": False,
+                "num_results": 0,
+            }
+
+        top_score = scores[0] if scores else 0.0
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        score_spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
+
+        # Check for temporal keywords
+        time_words = [
+            "when", "before", "after", "first", "last", "earlier", "later",
+            "date", "time", "year", "month", "day", "recently", "ago",
+            "during", "while", "until", "since"
+        ]
+        q_lower = question.lower()
+        is_temporal = any(w in q_lower for w in time_words)
+
+        # Check for multi-entity patterns
+        multi_entity_words = [" and ", " both ", " between ", " with ", " or "]
+        is_multi_entity = any(w in q_lower for w in multi_entity_words)
+
+        return {
+            "top_score": top_score,
+            "avg_score": avg_score,
+            "score_spread": score_spread,
+            "is_temporal": is_temporal,
+            "is_multi_entity": is_multi_entity,
+            "num_results": len(scores),
+        }
+
+    def _smart_route(self, question: str, retrieval_result, analysis: dict) -> str:
+        """
+        Decide retrieval strategy based on retrieval result quality.
+
+        Routing Logic:
+        1. High confidence single match (top_score > 0.85, spread > 0.3) -> "direct"
+        2. Temporal question with multiple results -> "temporal_sort"
+        3. Multi-entity OR uniform scores (spread < 0.15) -> "multi_round"
+        4. Low scores (top < 0.5) -> "expand"
+        5. Default -> "direct"
+
+        Args:
+            question: The original question
+            retrieval_result: RetrievalResult object
+            analysis: Quality analysis from _analyze_retrieval_quality
+
+        Returns:
+            Strategy string: "direct", "temporal_sort", "multi_round", or "expand"
+        """
+        top_score = analysis["top_score"]
+        score_spread = analysis["score_spread"]
+        is_temporal = analysis["is_temporal"]
+        is_multi_entity = analysis["is_multi_entity"]
+        num_results = analysis["num_results"]
+
+        # Strategy 1: High confidence single match -> direct answer
+        if top_score > self.smart_routing_high_score and score_spread > 0.3:
+            return "direct"
+
+        # Strategy 2: Low scores -> query expansion (prioritize getting better results first)
+        if top_score < self.smart_routing_low_score:
+            return "expand"
+
+        # Strategy 3: Temporal question with good results -> temporal sort
+        # Only use temporal_sort if we have decent results (top_score >= 0.5)
+        if is_temporal and num_results >= 3 and top_score >= self.smart_routing_low_score:
+            return "temporal_sort"
+
+        # Strategy 4: Multi-entity question OR uniform scores -> multi-round
+        if is_multi_entity or score_spread < self.smart_routing_spread_threshold:
+            return "multi_round"
+
+        # Default: direct answer
+        return "direct"
+
+    def _answer_with_smart_routing(self, question: str, verbose: int = 0) -> AgentResponse:
+        """
+        Answer question using smart routing based on retrieval result quality.
+
+        Flow:
+        1. First-round retrieval
+        2. Analyze retrieval quality
+        3. Route to appropriate strategy:
+           - direct: Answer immediately with current results
+           - temporal_sort: Sort by time, then answer
+           - multi_round: Use multi-round iterative retrieval
+           - expand: Use query expansion for better coverage
+
+        Args:
+            question: The question to answer
+            verbose: Verbosity level
+
+        Returns:
+            AgentResponse with answer and metadata
+        """
+        start_time = time.time()
+
+        # Adaptive top-k based on question type
+        effective_top_k = self._adaptive_top_k(question, self.retrieval_top_k)
+
+        # First-round retrieval
+        first_result = self._canvas.retrieve(
+            query=question,
+            top_k=self.reranker_candidate_k if self.use_reranker else effective_top_k,
+            method=self.retrieval_method,
+            include_related=self.enable_graph_expansion,
+            max_hops=self.graph_hops,
+        )
+
+        # Apply reranking if enabled
+        if self.use_reranker and self._reranker and len(first_result.objects) > 0:
+            first_result = self._apply_reranking(first_result, question)
+
+        # Analyze retrieval quality
+        analysis = self._analyze_retrieval_quality(question, first_result)
+        strategy = self._smart_route(question, first_result, analysis)
+
+        if verbose >= 1:
+            print(f"        [Smart Route] top={analysis['top_score']:.2f}, "
+                  f"spread={analysis['score_spread']:.2f}, "
+                  f"temporal={analysis['is_temporal']}, "
+                  f"multi_entity={analysis['is_multi_entity']} -> {strategy}")
+
+        # Route to appropriate strategy
+        if strategy == "direct":
+            return self._answer_direct(question, first_result, effective_top_k, verbose, start_time)
+        elif strategy == "temporal_sort":
+            return self._answer_with_temporal_sort(question, first_result, effective_top_k, verbose, start_time)
+        elif strategy == "multi_round":
+            # Delegate to existing multi-round method (it will start fresh)
+            return self._answer_question_multi_round(question, verbose)
+        elif strategy == "expand":
+            return self._answer_with_expansion(question, effective_top_k, verbose, start_time)
+        else:
+            # Fallback to direct
+            return self._answer_direct(question, first_result, effective_top_k, verbose, start_time)
+
+    def _answer_direct(
+        self,
+        question: str,
+        retrieval_result,
+        effective_top_k: int,
+        verbose: int = 0,
+        start_time: float = None
+    ) -> AgentResponse:
+        """
+        Answer directly using the provided retrieval result.
+
+        Args:
+            question: The question
+            retrieval_result: Pre-computed retrieval result
+            effective_top_k: Number of objects to use
+            verbose: Verbosity level
+            start_time: Start time for latency calculation
+
+        Returns:
+            AgentResponse
+        """
+        if start_time is None:
+            start_time = time.time()
+
+        # Truncate to effective top-k
+        retrieval_result.objects = retrieval_result.objects[:effective_top_k]
+        if retrieval_result.scores:
+            retrieval_result.scores = retrieval_result.scores[:effective_top_k]
+
+        # Build context and generate answer
+        canvas_context = self._canvas.inject(
+            retrieval_result,
+            format="compact",
+            max_tokens=5000,
+        )
+
+        answer = self._extract_answer_from_context(
+            question, retrieval_result, canvas_context, verbose=verbose
+        )
+
+        latency = (time.time() - start_time) * 1000
+
+        return AgentResponse(
+            answer=answer,
+            latency_ms=latency,
+            metadata={
+                "num_objects_retrieved": len(retrieval_result.objects),
+                "graph_expansion": self.enable_graph_expansion,
+                "graph_hops": self.graph_hops if self.enable_graph_expansion else 0,
+                "reranking_applied": self.use_reranker,
+                "retrieval_scores": (
+                    retrieval_result.scores[:3] if retrieval_result.scores else []
+                ),
+                "smart_routing": True,
+                "routing_strategy": "direct",
+            },
+        )
+
+    def _answer_with_temporal_sort(
+        self,
+        question: str,
+        retrieval_result,
+        effective_top_k: int,
+        verbose: int = 0,
+        start_time: float = None
+    ) -> AgentResponse:
+        """
+        Answer with temporal sorting of retrieval results.
+
+        Sorts objects by turn_id (or event_time if available) to provide
+        chronological context for temporal questions.
+
+        Args:
+            question: The question
+            retrieval_result: Pre-computed retrieval result
+            effective_top_k: Number of objects to use
+            verbose: Verbosity level
+            start_time: Start time for latency calculation
+
+        Returns:
+            AgentResponse
+        """
+        from cogcanvas.models import RetrievalResult
+
+        if start_time is None:
+            start_time = time.time()
+
+        # Sort objects by turn_id (chronological order)
+        objects_with_scores = list(zip(
+            retrieval_result.objects,
+            retrieval_result.scores or [0.5] * len(retrieval_result.objects)
+        ))
+
+        # Sort by turn_id (ascending for chronological order)
+        sorted_pairs = sorted(
+            objects_with_scores,
+            key=lambda x: getattr(x[0], 'turn_id', 0) or 0
+        )
+
+        sorted_objects = [p[0] for p in sorted_pairs][:effective_top_k]
+        sorted_scores = [p[1] for p in sorted_pairs][:effective_top_k]
+
+        sorted_result = RetrievalResult(
+            objects=sorted_objects,
+            scores=sorted_scores,
+            query=question,
+            retrieval_time=retrieval_result.retrieval_time if hasattr(retrieval_result, 'retrieval_time') else 0,
+        )
+
+        if verbose >= 2:
+            turn_ids = [getattr(obj, 'turn_id', '?') for obj in sorted_objects[:5]]
+            print(f"        [Temporal Sort] Sorted by turn_id: {turn_ids}...")
+
+        # Build context with temporal ordering emphasis
+        canvas_context = self._canvas.inject(
+            sorted_result,
+            format="compact",
+            max_tokens=5000,
+        )
+
+        answer = self._extract_answer_from_context(
+            question, sorted_result, canvas_context, verbose=verbose
+        )
+
+        latency = (time.time() - start_time) * 1000
+
+        return AgentResponse(
+            answer=answer,
+            latency_ms=latency,
+            metadata={
+                "num_objects_retrieved": len(sorted_result.objects),
+                "graph_expansion": self.enable_graph_expansion,
+                "graph_hops": self.graph_hops if self.enable_graph_expansion else 0,
+                "reranking_applied": self.use_reranker,
+                "retrieval_scores": sorted_scores[:3] if sorted_scores else [],
+                "smart_routing": True,
+                "routing_strategy": "temporal_sort",
+            },
+        )
+
+    def _answer_with_expansion(
+        self,
+        question: str,
+        effective_top_k: int,
+        verbose: int = 0,
+        start_time: float = None
+    ) -> AgentResponse:
+        """
+        Answer using query expansion for better recall.
+
+        Uses _retrieve_with_expansion to generate multiple query variants
+        and merge their results.
+
+        Args:
+            question: The question
+            effective_top_k: Number of objects to use
+            verbose: Verbosity level
+            start_time: Start time for latency calculation
+
+        Returns:
+            AgentResponse
+        """
+        if start_time is None:
+            start_time = time.time()
+
+        # Use query expansion retrieval
+        retrieval_result = self._retrieve_with_expansion(
+            question,
+            self.reranker_candidate_k if self.use_reranker else effective_top_k,
+            verbose
+        )
+
+        # Apply reranking if enabled
+        if self.use_reranker and self._reranker and len(retrieval_result.objects) > 0:
+            retrieval_result = self._apply_reranking(retrieval_result, question)
+
+        # Truncate to effective top-k
+        retrieval_result.objects = retrieval_result.objects[:effective_top_k]
+        if retrieval_result.scores:
+            retrieval_result.scores = retrieval_result.scores[:effective_top_k]
+
+        # Build context and answer
+        canvas_context = self._canvas.inject(
+            retrieval_result,
+            format="compact",
+            max_tokens=5000,
+        )
+
+        answer = self._extract_answer_from_context(
+            question, retrieval_result, canvas_context, verbose=verbose
+        )
+
+        latency = (time.time() - start_time) * 1000
+
+        return AgentResponse(
+            answer=answer,
+            latency_ms=latency,
+            metadata={
+                "num_objects_retrieved": len(retrieval_result.objects),
+                "graph_expansion": self.enable_graph_expansion,
+                "graph_hops": self.graph_hops if self.enable_graph_expansion else 0,
+                "reranking_applied": self.use_reranker,
+                "retrieval_scores": (
+                    retrieval_result.scores[:3] if retrieval_result.scores else []
+                ),
+                "smart_routing": True,
+                "routing_strategy": "expand",
+            },
+        )
 
     def get_canvas_stats(self) -> dict:
         """Get statistics about the current canvas state."""

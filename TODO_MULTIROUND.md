@@ -260,3 +260,40 @@ python -m experiments.runner_locomo --agent cogcanvas --verbose 1
 3. **LLM-guided contextual reasoning** - 最后一步让 LLM 整合（你已经有 CoT）
 
 **你缺的就是 multi-round recall**，这是最大差距。
+
+---
+
+## 测试命令
+
+### 单对话测试（调试用）
+
+```bash
+# 测试 multi-round retrieval
+python -m experiments.runner_locomo --agent cogcanvas-multiround --conv-ids locomo_000 --verbose 2
+
+# 测试 multi-round + query expansion
+python -m experiments.runner_locomo --agent cogcanvas-multiround-expand --conv-ids locomo_000 --verbose 2
+
+# 测试仅 query expansion（对照组）
+python -m experiments.runner_locomo --agent cogcanvas-expand-only --conv-ids locomo_000 --verbose 2
+```
+
+### 全量评估
+
+```bash
+# Multi-round retrieval
+python -m experiments.runner_locomo --agent cogcanvas-multiround --verbose 1
+
+# Multi-round + expansion（完整增强）
+python -m experiments.runner_locomo --agent cogcanvas-multiround-expand --verbose 1
+
+# Query expansion only（对照组）
+python -m experiments.runner_locomo --agent cogcanvas-expand-only --verbose 1
+```
+
+### 对比基准
+
+```bash
+# 当前 SOTA（无 multi-round）
+python -m experiments.runner_locomo --agent cogcanvas --verbose 1
+```

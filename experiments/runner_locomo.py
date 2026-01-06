@@ -63,6 +63,7 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         "extractor_model": config.get("extractor_model", "gpt-4o-mini"),
         "embedding_model": config.get("embedding_model", "bge-large-zh-v1.5"),
         "enable_temporal_heuristic": config.get("enable_temporal_heuristic", True),
+        "enable_gleaning": config.get("enable_gleaning", True),  # Added for gleaning ablation
         "extraction_mode": extraction_mode,
         "rolling_interval": config.get("rolling_interval", 40),
     }
@@ -650,6 +651,8 @@ class LoCoMoExperimentRunner:
             agent_config['embedding_model'] = agent.embedding_model
         if hasattr(agent, 'enable_temporal_heuristic'):
             agent_config['enable_temporal_heuristic'] = agent.enable_temporal_heuristic
+        if hasattr(agent, 'enable_gleaning'):
+            agent_config['enable_gleaning'] = agent.enable_gleaning
         agent_config['rolling_interval'] = self.rolling_interval
 
         # Generate config_hash if either load or save cache is enabled
@@ -768,7 +771,11 @@ class LoCoMoExperimentRunner:
             # In parallel mode, only use verbose >= 2 for per-question detail
             conv_verbose = verbose if verbose >= 2 else 0
             try:
+                with lock:
+                    print(f"  [Worker {idx}] Creating agent for {conv.id}...", flush=True)
                 agent = agent_factory()
+                with lock:
+                    print(f"  [Worker {idx}] Agent created, starting conversation {conv.id}...", flush=True)
                 if verbose >= 2:
                     with lock:
                         print(f"  [Starting] {conv.id} ({len(conv.turns)} turns, {len(conv.qa_pairs)} questions)")
@@ -1489,6 +1496,22 @@ def main():
             "cogcanvas-vage-chain",  # Chain-Level VAGE (graph-aware)
             "cogcanvas-cot-v2",  # CoT V2 prompt
             "cogcanvas-cot-fusion",  # CoT Fusion prompt
+            # New ablation variants (remove single component from full system)
+            "cogcanvas-no-cot",       # Full - CoT
+            "cogcanvas-no-temporal",  # Full - Temporal
+            "cogcanvas-no-hybrid",    # Full - Hybrid
+            "cogcanvas-no-rerank",    # Full - Reranker
+            "cogcanvas-no-graph",     # Full - Graph expansion
+            "cogcanvas-no-gleaning",  # Full - Gleaning (second-pass extraction)
+            "cogcanvas-minimal",      # Minimal baseline
+            # Multi-round retrieval variants
+            "cogcanvas-multiround",          # Multi-round retrieval
+            "cogcanvas-multiround-routed",   # Multi-round with query routing
+            "cogcanvas-multiround-expand",   # Multi-round + query expansion
+            "cogcanvas-expand-only",         # Query expansion only (control group)
+            "cogcanvas-smart",               # Smart routing based on retrieval quality
+            "cogcanvas-recall-boost",        # Recall-optimized config (top_k=20, hops=4)
+            "cogcanvas-balanced",            # Balanced config (top_k=15, hops=4)
             "native",
             "summarization",
             "rag",
@@ -1622,22 +1645,62 @@ def main():
     if args.agent.startswith("cogcanvas"):
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
 
-        # Default Full Config (SOTA) - v3.2: +Gleaning +AdaptiveTopK +Reranking
+        # Default Full Config (SOTA) - v3.3: Recall-optimized
+        # Increased retrieval params to boost recall from 71.8% to 85%+
         config = {
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
+            "enable_gleaning": True,  # Explicitly enabled for paper results
             "retrieval_method": "hybrid",
             "prompt_style": "cot",
-            "retrieval_top_k": 10,  # Base value, adaptive top-k adjusts per question
+            "retrieval_top_k": 15,  # Increased from 10 to 15 for better recall
             "graph_hops": 3,
-            "use_reranker": True,  # BGE reranking: +3.3pp
-            "reranker_candidate_k": 20,  # Retrieve 20, rerank to top-k
+            "use_reranker": True,  # BGE reranking
+            "reranker_candidate_k": 30,  # Increased from 20 to 30 for better recall
         }
 
-        if args.agent == "cogcanvas-nograph":
+        # =============================================================
+        # Ablation Variants (从 Full System 逐个移除组件)
+        # Full System: Graph + Temporal + Hybrid + CoT + Reranker
+        # =============================================================
+
+        # 移除 Graph → 禁用图扩展 (兼容旧名 cogcanvas-nograph)
+        if args.agent in ("cogcanvas-nograph", "cogcanvas-no-graph"):
             config["enable_graph_expansion"] = False
 
-        # Ablation Variants
+        # 移除 CoT → 使用 direct prompt
+        elif args.agent == "cogcanvas-no-cot":
+            config["prompt_style"] = "direct"
+
+        # 移除 Temporal → 禁用时间启发式边
+        elif args.agent == "cogcanvas-no-temporal":
+            config["enable_temporal_heuristic"] = False
+
+        # 移除 Hybrid → 仅用语义检索
+        elif args.agent == "cogcanvas-no-hybrid":
+            config["retrieval_method"] = "semantic"
+
+        # 移除 Reranker → 禁用 BGE reranking
+        elif args.agent == "cogcanvas-no-rerank":
+            config["use_reranker"] = False
+
+        # 移除 Gleaning → 禁用二次提取 (LightRAG-inspired)
+        elif args.agent == "cogcanvas-no-gleaning":
+            config["enable_gleaning"] = False
+
+        # Minimal Baseline: 仅 Graph 结构，无其他增强
+        elif args.agent == "cogcanvas-minimal":
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": False,
+                "retrieval_method": "semantic",
+                "prompt_style": "direct",
+                "retrieval_top_k": 10,
+                "graph_hops": 1,
+                "use_reranker": False,
+            }
+
+        # Legacy aliases (保持向后兼容)
         elif args.agent == "cogcanvas-baseline":
             config = {
                 "enable_graph_expansion": True,
@@ -1783,6 +1846,133 @@ def main():
                 "retrieval_top_k": 10,
                 "graph_hops": 3,
                 "vage_mode": "chain",
+            }
+
+        # =============================================================
+        # Multi-Round Retrieval Variants
+        # =============================================================
+        elif args.agent == "cogcanvas-multiround":
+            # Multi-round retrieval (EverMemOS-inspired agentic recall)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
+                "reranker_candidate_k": 20,
+                # Multi-round specific
+                "use_multi_round": True,
+                "max_retrieval_rounds": 3,
+                "confidence_threshold": 0.6,  # 平衡阈值
+            }
+        elif args.agent == "cogcanvas-multiround-routed":
+            # Multi-round with query routing: simple->single-round, complex->multi-round
+            # Addresses the tradeoff: multi-round +24.4pp on multi-hop, -20.8pp on single-hop
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
+                "reranker_candidate_k": 20,
+                # Multi-round with routing
+                "use_multi_round": True,
+                "max_retrieval_rounds": 3,
+                "confidence_threshold": 0.7,
+                "use_query_routing": True,  # Enable query complexity routing
+            }
+        elif args.agent == "cogcanvas-multiround-expand":
+            # Multi-round + query expansion (full enhanced retrieval)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
+                "reranker_candidate_k": 20,
+                # Multi-round + expansion (强制多轮，不用routing)
+                "use_multi_round": True,
+                "max_retrieval_rounds": 3,
+                "confidence_threshold": 0.6,  # 配合更严格的 prompt
+                "use_query_expansion": True,
+                "query_expansion_n": 3,
+                "use_query_routing": False,  # 关闭routing，所有问题都走多轮
+            }
+        elif args.agent == "cogcanvas-expand-only":
+            # Query expansion only (control group - no multi-round)
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
+                "reranker_candidate_k": 20,
+                # Query expansion only (no multi-round)
+                "use_query_expansion": True,
+                "query_expansion_n": 3,
+            }
+        elif args.agent == "cogcanvas-smart":
+            # Smart routing based on retrieval result quality
+            # Routes to: direct, temporal_sort, multi_round, or expand
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
+                "reranker_candidate_k": 20,
+                # Smart routing (retrieval-result-based)
+                "use_smart_routing": True,
+                # Multi-round settings (used when routed to multi_round)
+                "use_multi_round": True,
+                "max_retrieval_rounds": 3,
+                "confidence_threshold": 0.6,
+                # Query expansion settings (used when routed to expand)
+                "use_query_expansion": True,
+                "query_expansion_n": 3,
+            }
+        elif args.agent == "cogcanvas-recall-boost":
+            # Recall-optimized config: Higher top-k, more graph hops, more candidates
+            # Target: Boost retrieval recall from 71.8% to 85%+
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 20,  # Increased from 10 to 20
+                "graph_hops": 4,  # Increased from 3 to 4 for deeper graph traversal
+                "use_reranker": True,
+                "reranker_candidate_k": 40,  # Increased from 20 to 40 for better recall
+            }
+        elif args.agent == "cogcanvas-balanced":
+            # Balanced config: Fine-tuned middle ground
+            # Goal: Best overall without sacrificing any category
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "enable_gleaning": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 18,  # Between 15 and 20
+                "graph_hops": 4,  # Keep deeper traversal for multi-hop
+                "use_reranker": True,
+                "reranker_candidate_k": 35,  # Between 30 and 40
             }
 
         # Apply --vage-mode override if specified

@@ -1,40 +1,47 @@
 # CogCanvas
 
-> **Your AI's thinking whiteboard** — Paint persistent knowledge, keep your context
+> **Compression-Resistant Cognitive Artifacts for Long LLM Conversations**
 
 [中文版](./README_CN.md) | English
 
+[![arXiv](https://img.shields.io/badge/arXiv-2601.00821-b31b1b.svg)](https://arxiv.org/abs/2601.00821)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 ---
 
-CogCanvas is a **session-level, graph-enhanced RAG system** designed to solve the "Lost in the Middle" problem in long LLM conversations. Unlike traditional summarization (which is lossy) or raw RAG (which lacks context), CogCanvas extracts structured **cognitive artifacts** (Decisions, Todos, Facts) and organizes them into a dynamic graph, enabling precise retrieval even after thousands of turns.
+CogCanvas is a **training-free framework** for maintaining long-term memory in LLM conversations. Inspired by how teams use whiteboards to anchor shared knowledge, CogCanvas extracts **verbatim-grounded cognitive artifacts** (Decisions, Facts, Todos) and organizes them into a queryable graph structure.
 
-## Table of Contents
+**The Problem**: Conversation summarization loses critical details. When asked "What coding style did we agree on?", summarization recalls "use type hints" but drops the constraint "**everywhere**" (19.0% exact match vs. 93.0% for CogCanvas).
 
-- [Key Results](#-key-results)
-- [Quick Start](#-quick-start)
-- [Project Structure](#-project-structure)
-- [Core Concepts](#-core-concepts)
-- [API Reference](#-api-reference)
-- [Web UI](#-web-ui)
-- [Troubleshooting](#-troubleshooting)
-- [Roadmap](#-roadmap)
+**Our Solution**: Extract structured artifacts with exact source quotations, enabling traceable and hallucination-tolerant retrieval.
 
 ## Key Results
 
-| Metric | Summarization | **CogCanvas** | Improvement |
-| :--- | :--- | :--- | :--- |
-| **Recall (Standard)** | 86.0% | **96.5%** | **+10.5pp** |
-| **Recall (Stress Test)** | 77.5% | **95.0%** | **+17.5pp** |
-| **Exact Match** | 72.5% | **95.0%** | **+22.5pp** |
+### LoCoMo Benchmark (Binary LLM-as-Judge)
 
-> "CogCanvas effectively acts as a persistent memory layer that ignores context limits."
+| Agent | Overall | Single-hop | Temporal | Multi-hop |
+|-------|---------|------------|----------|-----------|
+| RAG | **49.1%** | **33.0%** | 10.6% | 39.6% |
+| **CogCanvas** | 45.4% | 30.9% | **27.7%** | **49.0%** |
+| GraphRAG | 13.9% | 13.5% | 3.1% | 26.0% |
+| Summarization | 7.8% | 6.4% | 0.6% | 26.0% |
+
+**Key Finding**: Task complexity determines optimal approach:
+- **Simple lookups**: RAG wins through direct chunk matching
+- **Complex reasoning**: CogCanvas excels with **+17.1pp on temporal** and **+9.4pp on multi-hop**
+
+### Controlled Benchmark
+
+| Metric | Summarization | RAG | **CogCanvas** |
+|--------|---------------|-----|---------------|
+| Recall | 19.0% | 89.5% | **97.5%** |
+| Exact Match | 19.0% | 89.5% | **93.0%** |
+| Multi-hop Pass | 55.5% | 55.5% | **81.0%** |
 
 ## Quick Start
 
-### 1. Installation
+### Installation
 
 ```bash
 git clone https://github.com/tao-hpu/cog-canvas.git
@@ -42,304 +49,198 @@ cd cog-canvas
 pip install -e .
 ```
 
-### 2. Environment Configuration
-
-**For Experiments (Python 3.10+ required):**
-
-Some experiment baselines (e.g., GraphRAG) require Python 3.10+. We recommend using conda:
-
-```bash
-# Create and activate py310 environment
-conda create -n py310 python=3.10 -y
-conda activate py310
-
-# Install llvmlite/numba via conda (avoids cmake issues)
-conda install -y llvmlite numba
-
-# Install the package
-pip install -e .
-
-# Install GraphRAG for baseline comparison
-pip install graphrag
-```
-
-**Basic Setup:**
-
-Copy the example environment file and fill in your API keys:
+### Configuration
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your configuration:
+Edit `.env`:
 
 ```bash
-# Required: Your OpenAI-compatible API key
-API_KEY=your-api-key-here
-API_BASE=https://api.openai.com/v1
-
-# Optional: Configure models
-MODEL_DEFAULT=gpt-4o
+OPENAI_API_KEY=your-api-key
+OPENAI_API_BASE=https://api.openai.com/v1
+EXTRACTOR_MODEL=gpt-4o-mini
+ANSWER_MODEL=gpt-4o-mini
 ```
 
-### 3. Basic Usage
+### Basic Usage
 
 ```python
 from cogcanvas import Canvas
 
-# Initialize canvas
+# Initialize
 canvas = Canvas()
 
-# Extract cognitive objects from a dialogue turn
+# Extract from dialogue
 canvas.extract(
-    user="Let's decide to use PostgreSQL for the database because of its JSONB support.",
-    assistant="Great choice. I'll update the architecture diagram."
+    user="Let's use PostgreSQL for the database. Budget is $500/month.",
+    assistant="Good choice. I'll note the budget constraint."
 )
 
 # ... 50 turns later ...
 
-# Retrieve context for a new question
-results = canvas.retrieve("Why did we choose Postgres?")
-# -> Returns: [DECISION] Use PostgreSQL (Context: JSONB support)
+# Retrieve with graph expansion
+results = canvas.retrieve("Why PostgreSQL? What was our budget?")
+# -> Returns linked artifacts: [DECISION: PostgreSQL] <-caused_by- [KEY_FACT: $500 budget]
 
 # Inject into prompt
 context = canvas.inject(results)
-print(context)
 ```
+
+## Core Concepts
+
+### Artifact Types
+
+CogCanvas extracts 5 types of cognitive artifacts:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `DECISION` | Choices made | "Use PostgreSQL for database" |
+| `KEY_FACT` | Important facts | "Budget: $500/month" |
+| `TODO` | Action items | "Set up database migrations" |
+| `REMINDER` | Constraints | "Must support JSONB queries" |
+| `INSIGHT` | Conclusions | "PostgreSQL fits our needs" |
+
+### Verbatim Grounding
+
+Each artifact includes a `quote` field with the exact source text:
+
+```json
+{
+  "type": "decision",
+  "content": "Use PostgreSQL as the primary database",
+  "quote": "Let's use PostgreSQL for the database",
+  "turn_id": 12
+}
+```
+
+This enables:
+- **Traceability**: Know exactly where information came from
+- **Hallucination resistance**: Verify against original text
+- **Compression tolerance**: Preserve details that summarization loses
+
+### Graph-Enhanced Retrieval
+
+Artifacts are connected with typed relationships:
+
+```
+[DECISION: Use PostgreSQL]
+    ├── caused_by → [KEY_FACT: $500 budget]
+    ├── caused_by → [REMINDER: Need JSONB support]
+    └── leads_to → [TODO: Set up migrations]
+```
+
+Retrieval expands through the graph (default: 3 hops), surfacing related context that simple vector search misses.
 
 ## Project Structure
 
 ```
 cog-canvas/
-├── cogcanvas/                    # Core Python library
-│   ├── __init__.py              # Package exports
-│   ├── canvas.py                # Main Canvas class
-│   ├── models.py                # Data models (CanvasObject, ObjectType)
-│   ├── graph.py                 # Graph structure management
-│   ├── embeddings.py            # Embedding backends
-│   ├── resolver.py              # Relationship resolver
-│   ├── scoring.py               # Confidence scoring
-│   └── llm/                     # LLM backends
-│       ├── base.py              # Base interface
-│       ├── openai.py            # OpenAI implementation
-│       └── anthropic_backend.py # Anthropic implementation
-├── web/                          # Web application
-│   ├── backend/                 # FastAPI backend (Port 3801)
-│   │   ├── main.py              # Application entry
-│   │   ├── routes/              # API routes
-│   │   └── requirements.txt     # Python dependencies
-│   └── frontend/                # Next.js frontend (Port 3800)
-│       ├── app/                 # Next.js app router
-│       ├── components/          # React components
-│       └── hooks/               # Custom React hooks
-├── .env.example                  # Environment template
-├── pyproject.toml               # Python project config
-└── README.md                    # This file
+├── cogcanvas/              # Core library
+│   ├── canvas.py           # Main Canvas class
+│   ├── models.py           # Data models
+│   ├── graph.py            # Graph operations
+│   ├── temporal.py         # Temporal enhancement
+│   └── llm/                # LLM backends
+├── experiments/            # Evaluation code
+│   ├── runner_locomo.py    # LoCoMo benchmark
+│   └── agents/             # Agent implementations
+├── web/                    # Web UI (FastAPI + Next.js)
+├── EXPERIMENTS.md          # Reproduction guide
+└── README.md
 ```
 
-## Core Concepts
+## Experiments
 
-### Canvas Object Types
+See [EXPERIMENTS.md](./EXPERIMENTS.md) for full reproduction instructions.
 
-CogCanvas extracts 5 types of cognitive objects from dialogue:
+### Quick Test
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `DECISION` | Choices made during conversation | "Using PostgreSQL for database" |
-| `TODO` | Action items and tasks | "Add error handling to login" |
-| `KEY_FACT` | Important facts, numbers, names | "API rate limit: 100/min" |
-| `REMINDER` | Constraints and preferences | "User prefers TypeScript" |
-| `INSIGHT` | Conclusions and learnings | "Bottleneck is in DB queries" |
+```bash
+# Run CogCanvas on 10 samples
+python -m experiments.runner_locomo --agent cogcanvas --samples 10 --llm-score
 
-### Graph-Enhanced Retrieval
-
-Objects are connected in a knowledge graph with relationships:
-- **References**: Object A mentions Object B
-- **Leads to**: Causal chain (Decision A → Decision B)
-- **Caused by**: Reverse causal relationship
-
-## API Reference
-
-### Canvas Class
-
-#### `Canvas(extractor_model, embedding_model, storage_path)`
-
-Initialize a new canvas.
-
-```python
-from cogcanvas import Canvas
-
-# Default (uses mock for development)
-canvas = Canvas()
-
-# With specific models
-canvas = Canvas(
-    extractor_model="gpt-4o-mini",
-    embedding_model="text-embedding-3-small",
-    storage_path="./canvas.json"  # Optional: persist to file
-)
+# Compare with RAG baseline
+python -m experiments.runner_locomo --agent rag --samples 10 --llm-score
 ```
 
-#### `canvas.extract(user, assistant, metadata=None)`
+### Ablation Studies
 
-Extract cognitive objects from a dialogue turn.
+```bash
+# Remove graph expansion (largest impact: -11.9pp)
+python -m experiments.runner_locomo --agent cogcanvas-no-graph --llm-score
 
-```python
-result = canvas.extract(
-    user="Let's use Redis for caching",
-    assistant="Good idea, I'll add it to the architecture"
-)
-
-print(f"Extracted {result.count} objects")
-for obj in result.objects:
-    print(f"  [{obj.type.value}] {obj.content}")
-```
-
-#### `canvas.retrieve(query, top_k=5, obj_type=None, method="semantic")`
-
-Retrieve relevant objects for a query.
-
-```python
-from cogcanvas import ObjectType
-
-# Basic retrieval
-results = canvas.retrieve("What caching solution?", top_k=3)
-
-# Filter by type
-decisions = canvas.retrieve(
-    "database choices",
-    obj_type=ObjectType.DECISION
-)
-
-# Include related objects (1-hop graph neighbors)
-results = canvas.retrieve(
-    "authentication",
-    include_related=True
-)
-```
-
-#### `canvas.inject(result, format="markdown", max_tokens=None)`
-
-Format retrieved objects for prompt injection.
-
-```python
-# Markdown format (default, most readable)
-context = canvas.inject(results)
-
-# JSON format (structured)
-context = canvas.inject(results, format="json")
-
-# Compact format (minimal tokens)
-context = canvas.inject(results, format="compact")
-
-# With token budget (auto-prunes)
-context = canvas.inject(results, max_tokens=500)
-```
-
-#### Utility Methods
-
-```python
-# Get all objects
-all_objects = canvas.all()
-
-# Get by type
-todos = canvas.by_type(ObjectType.TODO)
-
-# Statistics
-stats = canvas.stats()
-print(f"Total objects: {stats['total_objects']}")
-print(f"By type: {stats['by_type']}")
-
-# Clear canvas
-canvas.clear()
+# Remove temporal heuristics
+python -m experiments.runner_locomo --agent cogcanvas-no-temporal --llm-score
 ```
 
 ## Web UI
 
-### Quick Start (Two Terminals)
+### Start Backend (Port 3801)
 
-**Terminal 1 - Backend** (Port 3801):
 ```bash
 cd web/backend
 pip install -r requirements.txt
 python main.py
 ```
 
-**Terminal 2 - Frontend** (Port 3800):
+### Start Frontend (Port 3800)
+
 ```bash
 cd web/frontend
-pnpm install  # or: npm install
-pnpm dev      # or: npm run dev
+pnpm install && pnpm dev
 ```
 
-Open [http://localhost:3800](http://localhost:3800) to chat with CogCanvas.
+Open [http://localhost:3800](http://localhost:3800)
 
-### API Documentation
+## API Reference
 
-Once the backend is running:
-- Swagger UI: [http://localhost:3801/docs](http://localhost:3801/docs)
-- ReDoc: [http://localhost:3801/redoc](http://localhost:3801/redoc)
+### Canvas Class
 
-### Backend API Endpoints
+```python
+from cogcanvas import Canvas, ObjectType
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/canvas` | Get all canvas objects |
-| GET | `/api/canvas/stats` | Get canvas statistics |
-| GET | `/api/canvas/graph` | Get graph structure |
-| POST | `/api/canvas/retrieve` | Retrieve relevant objects |
-| POST | `/api/canvas/clear` | Clear canvas |
-| POST | `/api/chat` | Chat with SSE streaming |
-| POST | `/api/chat/simple` | Chat without streaming |
+# Initialize with custom models
+canvas = Canvas(
+    extractor_model="gpt-4o-mini",
+    embedding_model="text-embedding-3-small"
+)
 
-## Troubleshooting
+# Extract artifacts from dialogue
+canvas.extract(user="...", assistant="...")
 
-### Common Issues
+# Retrieve relevant artifacts
+results = canvas.retrieve(
+    query="Why did we choose X?",
+    top_k=5,
+    expand_hops=3  # Graph expansion depth
+)
 
-**1. API Key not working**
-```bash
-# Check your .env file
-cat .env | grep API_KEY
+# Filter by type
+decisions = canvas.retrieve(query, obj_type=ObjectType.DECISION)
 
-# Verify API connectivity
-curl -H "Authorization: Bearer $API_KEY" $API_BASE/models
+# Format for prompt injection
+context = canvas.inject(results, format="markdown")
 ```
 
-**2. Port already in use**
-```bash
-# Find and kill process on port 3801
-lsof -i :3801
-kill -9 <PID>
+## Citation
+
+If you use CogCanvas in your research, please cite:
+
+```bibtex
+@article{an2025cogcanvas,
+  title={CogCanvas: Compression-Resistant Cognitive Artifacts for Long LLM Conversations},
+  author={An, Tao},
+  journal={arXiv preprint arXiv:2601.00821},
+  year={2025},
+  url={https://arxiv.org/abs/2601.00821}
+}
 ```
-
-**3. Module not found**
-```bash
-# Reinstall in development mode
-pip install -e .
-```
-
-**4. CORS errors in browser**
-Ensure the backend CORS configuration matches your frontend URL in `web/backend/.env`:
-```
-CORS_ORIGINS=http://localhost:3800
-```
-
-## Experiments
-
-Evaluation scripts and benchmarks are in `experiments/`. See [experiments/README.md](experiments/README.md) for details.
-
-## Roadmap
-
-- [x] **Phase 1: MVP** - Core extraction & retrieval
-- [x] **Phase 2: Core Features** - Graph linking & confidence scoring
-- [x] **Phase 3: Evaluation** - Synthetic benchmarks (96.5% Recall)
-- [x] **Phase 4: Web UI** - Next.js visualization dashboard
-- [ ] **Phase 5: Dynamic Correction** - Handling conflicting decisions
-- [ ] **Phase 6: Deployment** - PyPI release
 
 ## License
 
-MIT License - see [LICENSE](./LICENSE) for details.
+MIT License - see [LICENSE](./LICENSE)
 
 ---
 
