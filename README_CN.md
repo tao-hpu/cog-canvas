@@ -5,6 +5,7 @@
 中文版 | [English](./README.md)
 
 [![arXiv](https://img.shields.io/badge/arXiv-2601.00821-b31b1b.svg)](https://arxiv.org/abs/2601.00821)
+[![Dataset](https://img.shields.io/badge/🤗-Dataset-yellow.svg)](https://huggingface.co/datasets/tao-hpu/cog-canvas-benchmark)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
@@ -40,6 +41,22 @@ CogCanvas 是一个**无需训练**的 LLM 长对话记忆框架。灵感来自�
 | 召回率 | 19.0% | 89.5% | **97.5%** |
 | 精确匹配 | 19.0% | 89.5% | **93.0%** |
 | 多跳通过率 | 55.5% | 55.5% | **81.0%** |
+
+## 数据集
+
+受控基准测试数据集已发布到 Hugging Face：
+
+```python
+from datasets import load_dataset
+
+# 标准基准测试 (5000 轮对话, 400 个植入事实)
+standard = load_dataset("tao-hpu/cog-canvas-benchmark", "standard_turns")
+
+# 多跳推理基准测试 (2500 轮对话, 176 个问题)
+multihop = load_dataset("tao-hpu/cog-canvas-benchmark", "multihop_turns")
+```
+
+可用配置: `standard_turns`, `standard_facts`, `multihop_turns`, `multihop_questions`
 
 ## 快速开始
 

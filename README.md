@@ -5,6 +5,7 @@
 [中文版](./README_CN.md) | English
 
 [![arXiv](https://img.shields.io/badge/arXiv-2601.00821-b31b1b.svg)](https://arxiv.org/abs/2601.00821)
+[![Dataset](https://img.shields.io/badge/🤗-Dataset-yellow.svg)](https://huggingface.co/datasets/tao-hpu/cog-canvas-benchmark)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
@@ -40,6 +41,22 @@ CogCanvas is a **training-free framework** for maintaining long-term memory in L
 | Recall | 19.0% | 89.5% | **97.5%** |
 | Exact Match | 19.0% | 89.5% | **93.0%** |
 | Multi-hop Pass | 55.5% | 55.5% | **81.0%** |
+
+## Dataset
+
+Our Controlled Benchmark is available on Hugging Face:
+
+```python
+from datasets import load_dataset
+
+# Standard benchmark (5000 turns, 400 planted facts)
+standard = load_dataset("tao-hpu/cog-canvas-benchmark", "standard_turns")
+
+# Multi-hop reasoning benchmark (2500 turns, 176 questions)
+multihop = load_dataset("tao-hpu/cog-canvas-benchmark", "multihop_turns")
+```
+
+Available configs: `standard_turns`, `standard_facts`, `multihop_turns`, `multihop_questions`
 
 ## Quick Start
 
