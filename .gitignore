@@ -111,3 +111,10 @@ web/frontend/.next/
 web/frontend/node_modules/
 .gemini-clipboard/
 .claude/
+
+# pnpm
+.pnpm-debug.log
+pnpm-lock.yaml
+
+# GraphRAG indexes (large generated files)
+experiments/graphrag_test/
