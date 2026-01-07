@@ -231,11 +231,11 @@ context = canvas.inject(results, format="markdown")
 If you use CogCanvas in your research, please cite:
 
 ```bibtex
-@article{an2025cogcanvas,
-  title={CogCanvas: Compression-Resistant Cognitive Artifacts for Long LLM Conversations},
+@article{an2026cogcanvas,
+  title={CogCanvas: Verbatim-Grounded Artifact Extraction for Long LLM Conversations},
   author={An, Tao},
   journal={arXiv preprint arXiv:2601.00821},
-  year={2025},
+  year={2026},
   url={https://arxiv.org/abs/2601.00821}
 }
 ```
