@@ -44,9 +44,13 @@ class GraphRAGConfig:
     api_base: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_api_base: Optional[str] = None
-    search_method: str = "local"  # "local" or "global"
-    community_level: int = 2
+    # Query-time knobs (grid: P1-2)
+    search_method: str = "local"  # local | global | drift | basic
+    community_level: int = 2  # Leiden hierarchy level
     response_type: str = "Single Paragraph"
+    # Index-time knobs (grid: P1-2) — change ⇒ separate cache dir
+    chunk_size: int = 800
+    max_gleanings: int = 1
 
 
 class GraphRAGAgent(Agent):
@@ -96,7 +100,7 @@ input:
   file_type: text
 
 chunks:
-  size: 800
+  size: {chunk_size}
   overlap: 100
   group_by_columns: [id]
 
@@ -126,7 +130,7 @@ extract_graph:
   model_id: default_chat_model
   prompt: "prompts/extract_graph.txt"
   entity_types: [person, technology, decision, fact, organization, concept]
-  max_gleanings: 1
+  max_gleanings: {max_gleanings}
 
 summarize_descriptions:
   model_id: default_chat_model
@@ -303,6 +307,8 @@ basic_search:
             embedding_api_key=self.config.embedding_api_key,
             embedding_api_base=self.config.embedding_api_base,
             embedding_model=self.config.embedding_model,
+            chunk_size=self.config.chunk_size,
+            max_gleanings=self.config.max_gleanings,
         )
         (work_path / "settings.yaml").write_text(settings_content)
 
@@ -333,10 +339,17 @@ basic_search:
         self._history = list(retained_turns)
 
     def _get_cache_path(self, conv_id: str) -> Path:
-        """Get cache path for a conversation's GraphRAG index."""
+        """Get cache path for a conversation's GraphRAG index.
+
+        Index params (chunk_size, max_gleanings) are baked into the path so
+        grid-search configs don't overwrite each other. Default config
+        (cs800/g1) keeps the legacy bare-conv-id path for backward compat.
+        """
         cache_dir = Path("experiments/cache/graphrag_indexes")
         cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / conv_id
+        if self.config.chunk_size == 800 and self.config.max_gleanings == 1:
+            return cache_dir / conv_id
+        return cache_dir / f"{conv_id}_cs{self.config.chunk_size}_g{self.config.max_gleanings}"
 
     def _build_index(self, turns: List[ConversationTurn], conv_id: Optional[str] = None) -> None:
         """Build graphrag index from conversation turns (with caching)."""
@@ -441,12 +454,14 @@ basic_search:
         """Query graphrag using CLI with retry mechanism."""
         for attempt in range(max_retries):
             try:
+                cmd = [
+                    self.python_path, "-m", "graphrag", "query",
+                    "--method", self.config.search_method,
+                    "--community-level", str(self.config.community_level),
+                    "--query", question,
+                ]
                 result = subprocess.run(
-                    [
-                        self.python_path, "-m", "graphrag", "query",
-                        "--method", self.config.search_method,
-                        "--query", question,
-                    ],
+                    cmd,
                     cwd=work_dir,
                     capture_output=True,
                     text=True,
@@ -551,9 +566,17 @@ basic_search:
 def create_graphrag_agent(
     search_method: str = "local",
     precomputed_index_path: Optional[str] = None,
+    community_level: int = 2,
+    chunk_size: int = 800,
+    max_gleanings: int = 1,
 ) -> GraphRAGAgent:
-    """Create a GraphRAG agent with default configuration."""
-    config = GraphRAGConfig(search_method=search_method)
+    """Create a GraphRAG agent with the given grid config (P1-2)."""
+    config = GraphRAGConfig(
+        search_method=search_method,
+        community_level=community_level,
+        chunk_size=chunk_size,
+        max_gleanings=max_gleanings,
+    )
     return GraphRAGAgent(
         config=config,
         precomputed_index_path=precomputed_index_path,

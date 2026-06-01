@@ -1660,6 +1660,32 @@ def main():
         help="Use LLM-based semantic scoring instead of F1 (fairer for synonyms/paraphrases)",
     )
 
+    # GraphRAG grid-search knobs (P1-2, ARR Aug 2026)
+    parser.add_argument(
+        "--graphrag-search-method",
+        choices=["local", "global", "drift", "basic"],
+        default="local",
+        help="GraphRAG query algorithm (only when --agent graphrag).",
+    )
+    parser.add_argument(
+        "--graphrag-community-level",
+        type=int,
+        default=2,
+        help="GraphRAG Leiden community level (only when --agent graphrag).",
+    )
+    parser.add_argument(
+        "--graphrag-chunk-size",
+        type=int,
+        default=800,
+        help="GraphRAG indexing chunk size in tokens (requires reindex).",
+    )
+    parser.add_argument(
+        "--graphrag-max-gleanings",
+        type=int,
+        default=1,
+        help="GraphRAG entity-extraction gleaning passes (requires reindex).",
+    )
+
     args = parser.parse_args()
 
     # Create agent and agent factory
@@ -2045,8 +2071,14 @@ def main():
     elif args.agent == "graphrag":
         from experiments.agents.graphrag_agent import create_graphrag_agent
 
-        agent = create_graphrag_agent(search_method="local")
-        agent_factory = lambda: create_graphrag_agent(search_method="local")
+        graphrag_kwargs = dict(
+            search_method=args.graphrag_search_method,
+            community_level=args.graphrag_community_level,
+            chunk_size=args.graphrag_chunk_size,
+            max_gleanings=args.graphrag_max_gleanings,
+        )
+        agent = create_graphrag_agent(**graphrag_kwargs)
+        agent_factory = lambda: create_graphrag_agent(**graphrag_kwargs)
     else:
         raise NotImplementedError(f"Agent '{args.agent}' not implemented")
 
