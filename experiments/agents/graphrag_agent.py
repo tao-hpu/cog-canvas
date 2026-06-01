@@ -460,12 +460,16 @@ basic_search:
                     "--community-level", str(self.config.community_level),
                     "--query", question,
                 ]
+                # drift / global do iterative LLM calls — 120s is too tight
+                # (Q1 of locomo_000 already exceeded on first attempt during P1-2
+                # pre-flight). 300s = safe budget at single-query level; cell
+                # wall time is the next risk to manage in Tier 1 design.
                 result = subprocess.run(
                     cmd,
                     cwd=work_dir,
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=300,
                 )
 
                 if result.returncode == 0:
