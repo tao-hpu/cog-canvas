@@ -253,6 +253,7 @@ Only output the JSON array, no other text."""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
                 temperature=0,
+                call_type="extract",
             )
 
             # Parse JSON
@@ -591,6 +592,7 @@ Only output the JSON array, no other text."""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
+                call_type="gen",
             )
         except Exception as e:
             return f"Error: {e}"

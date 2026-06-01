@@ -84,6 +84,7 @@ def call_llm_with_retry(
     base_delay: float = DEFAULT_BASE_DELAY,
     verbose: bool = True,
     max_retries: int = 10,  # Maximum retry attempts (0 = infinite)
+    call_type: Optional[str] = None,  # usage_tracker tag
     **kwargs
 ) -> str:
     """
@@ -98,6 +99,8 @@ def call_llm_with_retry(
         base_delay: Initial delay between retries
         verbose: Whether to print retry messages
         max_retries: Maximum retry attempts (0 = infinite, default=10)
+        call_type: usage_tracker tag (e.g. "gen", "extract", "judge"). If None,
+                   inherits from `with as_call_type(...)` block if any.
         **kwargs: Additional arguments for the API call
 
     Returns:
@@ -110,6 +113,7 @@ def call_llm_with_retry(
 
     while True:
         try:
+            _t0 = time.time()
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -117,6 +121,20 @@ def call_llm_with_retry(
                 temperature=temperature,
                 **kwargs
             )
+            _latency_ms = (time.time() - _t0) * 1000.0
+            # Record token usage (best-effort: zero if proxy omits .usage)
+            try:
+                from experiments import usage_tracker as _ut
+                _u = _ut.safe_usage_from_openai_response(response)
+                _ut.track_llm(
+                    call_type=call_type,
+                    model=model,
+                    prompt_tokens=_u["prompt_tokens"],
+                    completion_tokens=_u["completion_tokens"],
+                    latency_ms=_latency_ms,
+                )
+            except Exception:
+                pass  # tracking is best-effort, never break the real call
             return response.choices[0].message.content
 
         except Exception as e:

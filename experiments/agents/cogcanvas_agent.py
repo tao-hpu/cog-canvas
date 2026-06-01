@@ -693,6 +693,7 @@ IMPORTANT:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,
                 temperature=0.3,  # Slight variation for diversity
+                call_type="gen_aux",
             )
 
             # Try to parse JSON response
@@ -818,6 +819,7 @@ Return ONLY a number (e.g., 0.35), nothing else."""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=10,
                 temperature=0,
+                call_type="gen_aux",
             )
 
             # Parse the confidence score
@@ -887,6 +889,7 @@ Return ONLY the search query, nothing else."""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0.3,  # Slight variation for diversity
+                call_type="gen_aux",
             )
 
             followup_query = response.strip()
@@ -1036,12 +1039,21 @@ Return ONLY one word: 'simple' or 'complex'"""
         try:
             client = self._answer_client or self._client
             if client:
+                import time as _time_mod
+                _t0 = _time_mod.time()
                 response = client.chat.completions.create(
                     model=self.answer_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0,
                     max_tokens=10,
                 )
+                _latency_ms = (_time_mod.time() - _t0) * 1000.0
+                try:
+                    from experiments import usage_tracker as _ut
+                    _u = _ut.safe_usage_from_openai_response(response)
+                    _ut.track_llm("gen_aux", self.answer_model, _u["prompt_tokens"], _u["completion_tokens"], _latency_ms)
+                except Exception:
+                    pass
                 result = response.choices[0].message.content.strip().lower()
                 if 'complex' in result:
                     return 'complex'
@@ -1734,6 +1746,7 @@ Your goal is to answer questions by connecting discrete facts and tracking chang
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=200,
                     temperature=0,
+                    call_type="gen",
                 )
                 llm_ms = (time.time() - llm_start) * 1000
                 if verbose >= 3:

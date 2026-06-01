@@ -536,6 +536,7 @@ basic_search:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
+                call_type="gen",
             )
 
         except Exception as e:

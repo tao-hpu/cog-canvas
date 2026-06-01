@@ -178,6 +178,7 @@ class APIRerankerBackend(RerankerBackend):
                     payload["top_n"] = top_k
 
                 # Make API request
+                _t0 = time.time()
                 response = requests.post(
                     f"{self.api_base}/rerank",
                     headers={
@@ -189,6 +190,19 @@ class APIRerankerBackend(RerankerBackend):
                 )
                 response.raise_for_status()
                 data = response.json()
+                _latency_ms = (time.time() - _t0) * 1000.0
+
+                # Usage tracking (BGE local: no token cost, just compute footprint)
+                try:
+                    from experiments import usage_tracker as _ut
+                    _ut.track_rerank(
+                        model=self.model,
+                        num_docs=len(filtered_texts),
+                        query_chars=len(query or ""),
+                        latency_ms=_latency_ms,
+                    )
+                except Exception:
+                    pass
 
                 # Extract results
                 # API returns: {"results": [{"index": int, "relevance_score": float}, ...]}

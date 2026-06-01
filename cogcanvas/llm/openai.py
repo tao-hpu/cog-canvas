@@ -198,6 +198,8 @@ class OpenAIBackend(LLMBackend):
 
         # === First pass: Standard extraction ===
         try:
+            import time as _time_mod
+            _t0 = _time_mod.time()
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -207,6 +209,13 @@ class OpenAIBackend(LLMBackend):
                 temperature=0.1,  # Low temperature for consistent extraction
                 max_tokens=1000,
             )
+            _latency_ms = (_time_mod.time() - _t0) * 1000.0
+            try:
+                from experiments import usage_tracker as _ut
+                _u = _ut.safe_usage_from_openai_response(response)
+                _ut.track_llm("extract", self.model, _u["prompt_tokens"], _u["completion_tokens"], _latency_ms)
+            except Exception:
+                pass
 
             raw_response = response.choices[0].message.content.strip()
             llm_objects = self._parse_extraction_response(raw_response)
@@ -280,6 +289,8 @@ class OpenAIBackend(LLMBackend):
         )
 
         try:
+            import time as _time_mod
+            _t0 = _time_mod.time()
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -288,6 +299,13 @@ class OpenAIBackend(LLMBackend):
                 temperature=0.1,
                 max_tokens=800,
             )
+            _latency_ms = (_time_mod.time() - _t0) * 1000.0
+            try:
+                from experiments import usage_tracker as _ut
+                _u = _ut.safe_usage_from_openai_response(response)
+                _ut.track_llm("extract", self.model, _u["prompt_tokens"], _u["completion_tokens"], _latency_ms)
+            except Exception:
+                pass
 
             raw_response = response.choices[0].message.content.strip()
             gleaned_objects = self._parse_extraction_response(raw_response)
@@ -401,10 +419,23 @@ class OpenAIBackend(LLMBackend):
             Embedding vector
         """
         try:
+            import time as _time_mod
+            _t0 = _time_mod.time()
             response = self.client.embeddings.create(
                 model=self.embedding_model,
                 input=text,
             )
+            _latency_ms = (_time_mod.time() - _t0) * 1000.0
+            try:
+                from experiments import usage_tracker as _ut
+                _u = _ut.safe_usage_from_openai_response(response)
+                # Embedding API only reports prompt_tokens in usage
+                _pt = _u["prompt_tokens"]
+                if _pt == 0:
+                    _pt = _ut.estimate_tokens(text, self.embedding_model)
+                _ut.track_embed(self.embedding_model, _pt, 1, _latency_ms)
+            except Exception:
+                pass
             return response.data[0].embedding
         except Exception as e:
             print(f"Embedding error: {e}")

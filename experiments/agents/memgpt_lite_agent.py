@@ -470,6 +470,7 @@ class MemGPTLiteAgent(Agent):
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
+                call_type="gen",
             )
         except Exception as e:
             return f"Error: {e}"

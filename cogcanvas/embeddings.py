@@ -137,6 +137,7 @@ class APIEmbeddingBackend(EmbeddingBackend):
             max_retries = 3
             for attempt in range(max_retries + 1):
                 try:
+                    _t0 = time.time()
                     response = requests.post(
                         f"{self.api_base}/embeddings",
                         headers={
@@ -151,6 +152,19 @@ class APIEmbeddingBackend(EmbeddingBackend):
                     )
                     response.raise_for_status()
                     data = response.json()
+                    _latency_ms = (time.time() - _t0) * 1000.0
+
+                    # Token usage tracking (best-effort)
+                    try:
+                        from experiments import usage_tracker as _ut
+                        _u = data.get("usage", {}) or {}
+                        _pt = int(_u.get("prompt_tokens", 0) or _u.get("total_tokens", 0) or 0)
+                        if _pt == 0:
+                            # fall back to tiktoken estimate on inputs
+                            _pt = sum(_ut.estimate_tokens(t, self.model) for t in batch)
+                        _ut.track_embed(self.model, _pt, len(batch), _latency_ms)
+                    except Exception:
+                        pass
 
                     # Extract embeddings in order
                     batch_embeddings = sorted(data["data"], key=lambda x: x["index"])

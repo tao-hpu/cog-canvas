@@ -1,29 +1,29 @@
 """
-LoCoMo Experiment Runner for CogCanvas Evaluation.
+LongMemEval Experiment Runner for CogCanvas Evaluation.
 
-This runner evaluates agents on the LoCoMo (Long Context Multi-hop) benchmark.
+This runner evaluates agents on the LongMemEval (ICLR 2025) benchmark.
 
-LoCoMo Characteristics:
-- Real-world multi-session conversations
-- Single-hop, temporal, and multi-hop questions
-- Evidence-based evaluation with dialogue ID references
+LongMemEval Characteristics:
+- 500 questions, each with its own haystack of ~48 multi-session conversations
+- One QA per conversation: 500 conversations x 1 question each
+- 5 memory ability categories across 6 question types
 
 Evaluation Strategy:
-1. Process conversation turns up to compression point (middle of conversation)
-2. Trigger compression
-3. Process remaining turns
-4. Ask questions from all categories
-5. Score using keyword overlap and exact match
+1. Process conversation turns with rolling/single/dynamic compression
+2. Ask the single question associated with each conversation
+3. Score using LongMemEval's official LLM Judge binary evaluation
 
-Question Categories:
-- Single-hop (category 1): Direct fact retrieval
-- Temporal (category 2): Time-based reasoning
-- Multi-hop (category 3): Requires connecting multiple facts
+Question Categories (5 memory abilities):
+- Category 1: Information Extraction (single-session-user, single-session-assistant, single-session-preference)
+- Category 2: Multi-Session Reasoning (multi-session)
+- Category 3: Knowledge Update (knowledge-update)
+- Category 4: Temporal Reasoning (temporal-reasoning)
+- Category 5: Abstention (unanswerable questions)
 
 Scoring:
-- Keyword overlap: Fraction of answer keywords found in response
-- Exact match: Full answer string appears in response
-- Pass threshold: 60% keyword overlap or exact match
+- LLM Judge binary evaluation (yes/no) using official LongMemEval prompts
+- Different judge prompts per question_type
+- No F1 fallback (LLM Judge is the official protocol)
 """
 
 import json
@@ -63,7 +63,7 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         "extractor_model": config.get("extractor_model", "gpt-4o-mini"),
         "embedding_model": config.get("embedding_model", "bge-large-zh-v1.5"),
         "enable_temporal_heuristic": config.get("enable_temporal_heuristic", True),
-        "enable_gleaning": config.get("enable_gleaning", True),  # Added for gleaning ablation
+        "enable_gleaning": config.get("enable_gleaning", True),
         "extraction_mode": extraction_mode,
         "rolling_interval": config.get("rolling_interval", 40),
     }
@@ -72,17 +72,115 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
 
 
 def get_cache_path(conv_id: str, config_hash: str) -> Path:
-    """Get the cache file path for a conversation."""
-    cache_dir = Path("experiments/cache/extraction") / config_hash
+    """Get the cache file path for a LongMemEval conversation.
+
+    Uses a separate namespace from LoCoMo to avoid cache mixing.
+    """
+    cache_dir = Path("experiments/cache/extraction_longmemeval") / config_hash
     return cache_dir / f"{conv_id}.json"
 
 
-from experiments.locomo_adapter import (
-    load_locomo,
+from experiments.longmemeval_adapter import (
+    load_longmemeval,
     convert_to_eval_format,
-    LoCoMoConversation,
-    LoCoMoQAPair,
+    LongMemEvalConversation,
+    LongMemEvalQAPair,
+    CATEGORY_NAMES,
 )
+
+
+# =============================================================================
+# LLM Judge Prompts (Official LongMemEval evaluate_qa.py)
+# =============================================================================
+
+
+def get_longmemeval_judge_prompt(
+    question_type: str,
+    question: str,
+    answer: str,
+    response: str,
+    is_abstention: bool = False,
+) -> str:
+    """
+    Get the official LongMemEval LLM Judge prompt for a given question type.
+
+    These prompts are EXACT copies from the official LongMemEval evaluate_qa.py.
+    Each question type uses a tailored evaluation template.
+
+    Args:
+        question_type: One of the 6 LongMemEval question types
+        question: The original question
+        answer: The ground truth answer (or explanation for abstention)
+        response: The model's response to judge
+        is_abstention: Whether this is an abstention (unanswerable) question
+
+    Returns:
+        The formatted judge prompt string
+
+    Raises:
+        ValueError: If question_type is not recognized (non-abstention only)
+    """
+    if not is_abstention:
+        if question_type in ['single-session-user', 'single-session-assistant', 'multi-session']:
+            template = (
+                "I will give you a question, a correct answer, and a response from a model. "
+                "Please answer yes if the response contains the correct answer. Otherwise, answer no. "
+                "If the response is equivalent to the correct answer or contains all the intermediate "
+                "steps to get the correct answer, you should also answer yes. If the response only "
+                "contains a subset of the information required by the answer, answer no. "
+                "\n\nQuestion: {}\n\nCorrect Answer: {}\n\nModel Response: {}"
+                "\n\nIs the model response correct? Answer yes or no only."
+            )
+            return template.format(question, answer, response)
+        elif question_type == 'temporal-reasoning':
+            template = (
+                "I will give you a question, a correct answer, and a response from a model. "
+                "Please answer yes if the response contains the correct answer. Otherwise, answer no. "
+                "If the response is equivalent to the correct answer or contains all the intermediate "
+                "steps to get the correct answer, you should also answer yes. If the response only "
+                "contains a subset of the information required by the answer, answer no. "
+                "In addition, do not penalize off-by-one errors for the number of days. "
+                "If the question asks for the number of days/weeks/months, etc., and the model makes "
+                "off-by-one errors (e.g., predicting 19 days when the answer is 18), the model's "
+                "response is still correct. "
+                "\n\nQuestion: {}\n\nCorrect Answer: {}\n\nModel Response: {}"
+                "\n\nIs the model response correct? Answer yes or no only."
+            )
+            return template.format(question, answer, response)
+        elif question_type == 'knowledge-update':
+            template = (
+                "I will give you a question, a correct answer, and a response from a model. "
+                "Please answer yes if the response contains the correct answer. Otherwise, answer no. "
+                "If the response contains some previous information along with an updated answer, "
+                "the response should be considered as correct as long as the updated answer is the "
+                "required answer."
+                "\n\nQuestion: {}\n\nCorrect Answer: {}\n\nModel Response: {}"
+                "\n\nIs the model response correct? Answer yes or no only."
+            )
+            return template.format(question, answer, response)
+        elif question_type == 'single-session-preference':
+            template = (
+                "I will give you a question, a rubric for desired personalized response, and a "
+                "response from a model. Please answer yes if the response satisfies the desired "
+                "response. Otherwise, answer no. The model does not need to reflect all the points "
+                "in the rubric. The response is correct as long as it recalls and utilizes the user's "
+                "personal information correctly."
+                "\n\nQuestion: {}\n\nRubric: {}\n\nModel Response: {}"
+                "\n\nIs the model response correct? Answer yes or no only."
+            )
+            return template.format(question, answer, response)
+        else:
+            raise ValueError(f"Unknown question_type: {question_type}")
+    else:
+        template = (
+            "I will give you an unanswerable question, an explanation, and a response from a model. "
+            "Please answer yes if the model correctly identifies the question as unanswerable. "
+            "The model could say that the information is incomplete, or some other information is "
+            "given but the asked information is not."
+            "\n\nQuestion: {}\n\nExplanation: {}\n\nModel Response: {}"
+            "\n\nDoes the model correctly identify the question as unanswerable? Answer yes or no only."
+        )
+        return template.format(question, answer, response)
 
 
 # =============================================================================
@@ -91,208 +189,63 @@ from experiments.locomo_adapter import (
 
 
 @dataclass
-class LoCoMoScoreResult:
-    """Result of scoring a LoCoMo answer (aligned with official LoCoMo evaluation)."""
+class LongMemEvalScoreResult:
+    """Result of scoring a LongMemEval answer (official LLM Judge binary evaluation)."""
 
-    f1_score: float  # Token-level F1 score (official LoCoMo metric)
-    precision: float  # Token precision
-    recall: float  # Token recall
-    exact_match: bool  # Whether exact answer appears in response
-    prediction_tokens: List[str]  # Normalized + stemmed tokens from prediction
-    ground_truth_tokens: List[str]  # Normalized + stemmed tokens from ground truth
-    answer: str
-    ground_truth: str
+    correct: bool       # Binary: yes/no from LLM judge
+    judge_response: str  # Raw judge response
+    answer: str         # Model's answer
+    ground_truth: str   # Expected answer
 
     @property
     def passed(self) -> bool:
-        """Consider passed if F1 >= 0.5 (aligned with LoCoMo threshold)."""
-        return self.f1_score >= 0.5
-
-    # Backward compatibility
-    @property
-    def keyword_overlap(self) -> float:
-        """Alias for recall (backward compatibility)."""
-        return self.recall
+        """Whether the answer was judged correct."""
+        return self.correct
 
     @property
-    def found_keywords(self) -> List[str]:
-        """Tokens found in both prediction and ground truth."""
-        return list(set(self.prediction_tokens) & set(self.ground_truth_tokens))
+    def f1_score(self) -> float:
+        """Binary score for compatibility with LoCoMo-style aggregation."""
+        return 1.0 if self.correct else 0.0
 
     @property
-    def missing_keywords(self) -> List[str]:
-        """Tokens in ground truth but not in prediction."""
-        return list(set(self.ground_truth_tokens) - set(self.prediction_tokens))
+    def exact_match(self) -> bool:
+        """Alias for correct (binary judge = exact match equivalent)."""
+        return self.correct
 
 
-# Porter Stemmer for token normalization (aligned with LoCoMo official)
-try:
-    from nltk.stem import PorterStemmer
-    _stemmer = PorterStemmer()
-except ImportError:
-    _stemmer = None
-
-
-def normalize_answer(text: str) -> str:
-    """
-    Normalize answer text (aligned with LoCoMo official implementation).
-
-    - Lowercase
-    - Remove articles (a, an, the)
-    - Remove punctuation
-    - Remove extra whitespace
-    """
-    import string
-
-    # Handle None
-    if text is None:
-        return ""
-
-    # Lowercase
-    text = text.lower()
-
-    # Remove articles
-    text = re.sub(r'\b(a|an|the)\b', ' ', text)
-
-    # Remove punctuation
-    text = text.translate(str.maketrans('', '', string.punctuation))
-
-    # Remove extra whitespace
-    text = ' '.join(text.split())
-
-    return text
-
-
-def tokenize_and_stem(text: str) -> List[str]:
-    """
-    Tokenize and stem text (aligned with LoCoMo official implementation).
-
-    Uses Porter Stemmer for word stemming.
-    """
-    normalized = normalize_answer(text)
-    tokens = normalized.split()
-
-    # Apply stemming if available
-    if _stemmer:
-        tokens = [_stemmer.stem(t) for t in tokens]
-
-    return tokens
-
-
-def compute_f1_score(prediction: str, ground_truth: str) -> tuple:
-    """
-    Compute token-level F1 score (aligned with LoCoMo official implementation).
-
-    Returns:
-        (f1, precision, recall, pred_tokens, truth_tokens)
-    """
-    pred_tokens = tokenize_and_stem(prediction)
-    truth_tokens = tokenize_and_stem(ground_truth)
-
-    if not pred_tokens or not truth_tokens:
-        return (0.0, 0.0, 0.0, pred_tokens, truth_tokens)
-
-    # Count common tokens
-    common = set(pred_tokens) & set(truth_tokens)
-    num_same = len(common)
-
-    if num_same == 0:
-        return (0.0, 0.0, 0.0, pred_tokens, truth_tokens)
-
-    precision = num_same / len(pred_tokens)
-    recall = num_same / len(truth_tokens)
-    f1 = (2 * precision * recall) / (precision + recall)
-
-    return (f1, precision, recall, pred_tokens, truth_tokens)
-
-
-def score_locomo_answer(answer: str, ground_truth: str) -> LoCoMoScoreResult:
-    """
-    Score answer using token-level F1 (aligned with LoCoMo official evaluation).
-
-    Scoring approach (from official LoCoMo):
-    1. Normalize: lowercase, remove articles (a/an/the), remove punctuation
-    2. Tokenize and stem using Porter Stemmer
-    3. Compute token-level precision, recall, F1
-    4. Exact match: Check if normalized ground truth in normalized answer
-
-    Args:
-        answer: The model's answer
-        ground_truth: Expected answer from LoCoMo
-
-    Returns:
-        LoCoMoScoreResult with F1 scoring details
-    """
-    # Compute F1 score (official LoCoMo method)
-    f1, precision, recall, pred_tokens, truth_tokens = compute_f1_score(answer, ground_truth)
-
-    # Exact match check (on normalized text)
-    answer_normalized = normalize_answer(answer)
-    truth_normalized = normalize_answer(ground_truth)
-    exact_match = truth_normalized in answer_normalized
-
-    return LoCoMoScoreResult(
-        f1_score=f1,
-        precision=precision,
-        recall=recall,
-        exact_match=exact_match,
-        prediction_tokens=pred_tokens,
-        ground_truth_tokens=truth_tokens,
-        answer=answer,
-        ground_truth=ground_truth,
-    )
-
-
-def score_locomo_answer_llm(
+def score_longmemeval_answer(
     answer: str,
     ground_truth: str,
     question: str,
+    question_type: str,
+    is_abstention: bool,
     client,
-    model: str = "glm-4-flash",
-) -> LoCoMoScoreResult:
+    model: str = "gpt-4o-mini",
+) -> LongMemEvalScoreResult:
     """
-    Score answer using LLM-based semantic evaluation.
+    Score an answer using LongMemEval's official LLM Judge protocol.
 
-    This method is fairer for cases like:
-    - "her mother" vs "her mom" (synonyms)
-    - "a few years ago" vs "a few years before 2023" (equivalent expressions)
-    - "7 May 2023" vs "May 7, 2023" (date format differences)
+    Uses the official evaluation prompts from LongMemEval evaluate_qa.py,
+    tailored to each question type. The judge outputs yes/no and we parse
+    the binary result.
 
     Args:
-        answer: The model's answer
-        ground_truth: Expected answer from LoCoMo
-        question: The original question (for context)
-        client: OpenAI-compatible client
-        model: Model to use for scoring
+        answer: The model's answer to score
+        ground_truth: Expected answer (or rubric/explanation for preference/abstention)
+        question: The original question
+        question_type: One of the 6 LongMemEval question types
+        is_abstention: Whether this is an abstention question
+        client: OpenAI-compatible client for the judge LLM
+        model: Model to use for judging (default: gpt-4o-mini)
 
     Returns:
-        LoCoMoScoreResult with LLM-based scoring
+        LongMemEvalScoreResult with binary judgment
     """
     from experiments.llm_utils import call_llm_with_retry
 
-    # Binary LLM Judge (aligned with SOTA: Mem0, Zep, Memobase)
-    # Only CORRECT (1) or INCORRECT (0), no partial credit
-    prompt = f"""You are an expert evaluator. Judge if the predicted answer is semantically correct compared to the ground truth.
-
-## Question
-{question}
-
-## Ground Truth Answer
-{ground_truth}
-
-## Predicted Answer
-{answer}
-
-## Evaluation Criteria (Binary - strict)
-- CORRECT: The predicted answer correctly answers the question and conveys the same core meaning as the ground truth. Synonyms, paraphrases, and equivalent formats (e.g., "March 15" vs "3/15") are acceptable.
-- INCORRECT: The predicted answer is wrong, incomplete, irrelevant, contradicts the ground truth, or fails to answer the question.
-
-## Important
-- Be strict: partial answers or answers with significant missing information should be marked INCORRECT
-- The answer must address the actual question being asked
-
-## Response Format
-Reply with ONLY one word: CORRECT or INCORRECT"""
+    prompt = get_longmemeval_judge_prompt(
+        question_type, question, ground_truth, answer, is_abstention
+    )
 
     try:
         response = call_llm_with_retry(
@@ -301,36 +254,18 @@ Reply with ONLY one word: CORRECT or INCORRECT"""
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10,
             temperature=0,
-            call_type="judge",
+            verbose=False,
+            max_retries=5,
         )
-        judgment = response.strip().upper()
-
-        # Binary scoring (0 or 1 only)
-        if "CORRECT" in judgment and "INCORRECT" not in judgment:
-            llm_score = 1.0
-        else:
-            llm_score = 0.0
-
+        correct = 'yes' in response.strip().lower()
     except Exception as e:
-        print(f"LLM scoring failed: {e}, falling back to F1")
-        llm_score = None
+        print(f"[WARN] LLM Judge failed: {e}, marking as incorrect")
+        response = f"Error: {type(e).__name__}: {e}"
+        correct = False
 
-    # Also compute F1 for comparison
-    f1, precision, recall, pred_tokens, truth_tokens = compute_f1_score(answer, ground_truth)
-    answer_normalized = normalize_answer(answer)
-    truth_normalized = normalize_answer(ground_truth)
-    exact_match = truth_normalized in answer_normalized
-
-    # Use LLM score if available, otherwise fall back to F1
-    final_f1 = llm_score if llm_score is not None else f1
-
-    return LoCoMoScoreResult(
-        f1_score=final_f1,
-        precision=precision,
-        recall=recall,
-        exact_match=exact_match or (llm_score == 1.0),
-        prediction_tokens=pred_tokens,
-        ground_truth_tokens=truth_tokens,
+    return LongMemEvalScoreResult(
+        correct=correct,
+        judge_response=response,
         answer=answer,
         ground_truth=ground_truth,
     )
@@ -342,27 +277,29 @@ Reply with ONLY one word: CORRECT or INCORRECT"""
 
 
 @dataclass
-class LoCoMoQuestionResult:
-    """Result for a single LoCoMo question."""
+class LongMemEvalQuestionResult:
+    """Result for a single LongMemEval question."""
 
+    question_id: str
     question: str
+    question_type: str
     category: int
     category_name: str
-    evidence_turns: List[int]  # Turn IDs where evidence is located
+    is_abstention: bool
     ground_truth: str
     answer: str
-    score: LoCoMoScoreResult
+    score: LongMemEvalScoreResult
     latency_ms: float
 
 
 @dataclass
-class LoCoMoConversationResult:
-    """Result for a single LoCoMo conversation."""
+class LongMemEvalConversationResult:
+    """Result for a single LongMemEval conversation (1 question per conversation)."""
 
     conversation_id: str
     num_turns: int
     compression_turn: int
-    question_results: List[LoCoMoQuestionResult]
+    question_results: List[LongMemEvalQuestionResult]
     total_time_ms: float
 
     @property
@@ -385,7 +322,7 @@ class LoCoMoConversationResult:
 
     @property
     def avg_f1_score(self) -> float:
-        """Average F1 score across all questions."""
+        """Average F1 score across all questions (binary for LongMemEval)."""
         if not self.question_results:
             return 0.0
         return sum(r.score.f1_score for r in self.question_results) / len(
@@ -408,16 +345,13 @@ class LoCoMoConversationResult:
 
 
 @dataclass
-class LoCoMoExperimentResult:
-    """Result for complete LoCoMo experiment."""
+class LongMemEvalExperimentResult:
+    """Result for complete LongMemEval experiment."""
 
     agent_name: str
-    conversation_results: List[LoCoMoConversationResult]
+    conversation_results: List[LongMemEvalConversationResult]
     config: Dict[str, Any]
     timestamp: str
-    # Token usage snapshot for amortized cost analysis (P1-3). None if tracker
-    # was disabled or unavailable. Schema: see experiments/usage_tracker.snapshot.
-    token_usage: Optional[Dict[str, Any]] = None
 
     @property
     def overall_accuracy(self) -> float:
@@ -439,7 +373,7 @@ class LoCoMoExperimentResult:
 
     @property
     def overall_f1_score(self) -> float:
-        """Overall average F1 score."""
+        """Overall average F1 score (binary for LongMemEval)."""
         if not self.conversation_results:
             return 0.0
         return sum(c.avg_f1_score for c in self.conversation_results) / len(
@@ -464,30 +398,50 @@ class LoCoMoExperimentResult:
             category_results
         )
 
+    def task_averaged_accuracy(self) -> float:
+        """Task-averaged accuracy: mean of 5 category accuracies.
+
+        This is the primary metric for LongMemEval, treating each memory
+        ability equally regardless of the number of questions per category.
+        """
+        category_accs = []
+        for cat in range(1, 6):
+            acc = self.accuracy_by_category(cat)
+            # Only include categories that have questions
+            category_results = []
+            for conv in self.conversation_results:
+                category_results.extend(
+                    [r for r in conv.question_results if r.category == cat]
+                )
+            if category_results:
+                category_accs.append(acc)
+
+        if not category_accs:
+            return 0.0
+        return sum(category_accs) / len(category_accs)
+
     def summary(self) -> Dict[str, Any]:
         """Get summary of results."""
         return {
             "agent": self.agent_name,
             "num_conversations": len(self.conversation_results),
             "overall_accuracy": f"{self.overall_accuracy:.1%}",
-            "exact_match_rate": f"{self.overall_exact_match_rate:.1%}",
-            "avg_f1_score": f"{self.overall_f1_score:.1%}",
-            "single_hop_accuracy": f"{self.accuracy_by_category(1):.1%}",
-            "temporal_accuracy": f"{self.accuracy_by_category(2):.1%}",
-            "multi_hop_accuracy": f"{self.accuracy_by_category(3):.1%}",
+            "task_averaged_accuracy": f"{self.task_averaged_accuracy():.1%}",
+            "information_extraction_accuracy": f"{self.accuracy_by_category(1):.1%}",
+            "multi_session_reasoning_accuracy": f"{self.accuracy_by_category(2):.1%}",
+            "knowledge_update_accuracy": f"{self.accuracy_by_category(3):.1%}",
+            "temporal_reasoning_accuracy": f"{self.accuracy_by_category(4):.1%}",
+            "abstention_accuracy": f"{self.accuracy_by_category(5):.1%}",
         }
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
-        out = {
+        return {
             "agent_name": self.agent_name,
             "timestamp": self.timestamp,
             "config": self.config,
             "summary": self.summary(),
-        }
-        if self.token_usage is not None:
-            out["token_usage"] = self.token_usage
-        out["conversations"] = [
+            "conversations": [
                 {
                     "id": c.conversation_id,
                     "num_turns": c.num_turns,
@@ -495,19 +449,24 @@ class LoCoMoExperimentResult:
                     "accuracy": c.accuracy,
                     "exact_match_rate": c.exact_match_rate,
                     "avg_f1_score": c.avg_f1_score,
-                    "single_hop_accuracy": c.accuracy_by_category(1),
-                    "temporal_accuracy": c.accuracy_by_category(2),
-                    "multi_hop_accuracy": c.accuracy_by_category(3),
+                    "information_extraction_accuracy": c.accuracy_by_category(1),
+                    "multi_session_reasoning_accuracy": c.accuracy_by_category(2),
+                    "knowledge_update_accuracy": c.accuracy_by_category(3),
+                    "temporal_reasoning_accuracy": c.accuracy_by_category(4),
+                    "abstention_accuracy": c.accuracy_by_category(5),
                     "questions": [
                         {
+                            "question_id": q.question_id,
                             "question": q.question,
+                            "question_type": q.question_type,
                             "category": q.category,
                             "category_name": q.category_name,
+                            "is_abstention": q.is_abstention,
                             "ground_truth": q.ground_truth,
                             "answer": q.answer,
+                            "correct": q.score.correct,
+                            "judge_response": q.score.judge_response,
                             "f1_score": q.score.f1_score,
-                            "precision": q.score.precision,
-                            "recall": q.score.recall,
                             "exact_match": q.score.exact_match,
                             "passed": q.score.passed,
                             "latency_ms": q.latency_ms,
@@ -516,8 +475,8 @@ class LoCoMoExperimentResult:
                     ],
                 }
                 for c in self.conversation_results
-            ]
-        return out
+            ],
+        }
 
 
 # =============================================================================
@@ -525,18 +484,18 @@ class LoCoMoExperimentResult:
 # =============================================================================
 
 
-class LoCoMoExperimentRunner:
+class LongMemEvalExperimentRunner:
     """
-    Runs LoCoMo evaluation experiments.
+    Runs LongMemEval evaluation experiments.
 
     Flow:
-    1. Load LoCoMo conversations
+    1. Load LongMemEval conversations (500 questions, each with haystack sessions)
     2. For each conversation:
-       a. Process turns up to compression point (middle)
-       b. Trigger compression
-       c. Process remaining turns
-       d. Ask all QA questions
-       e. Score based on keyword overlap and exact match
+       a. Process turns with rolling/single/dynamic compression
+       b. Fix temporal resolution after extraction
+       c. Cache save/load for Canvas states
+       d. Ask the single QA question
+       e. Score using LLM Judge (official LongMemEval protocol)
     """
 
     def __init__(
@@ -553,25 +512,25 @@ class LoCoMoExperimentRunner:
         save_cache: bool = True,  # Save Canvas state to cache after extraction
         extract_only: bool = False,  # Only extract, skip QA (for cache warmup)
         qa_parallel: int = 1,  # Number of parallel QA workers per conversation (1 = sequential)
-        llm_score: bool = False,  # Use LLM-based semantic scoring instead of F1
+        score_model: Optional[str] = None,  # LLM judge model (default from env or gpt-4o-mini)
     ):
         """
-        Initialize LoCoMo runner.
+        Initialize LongMemEval runner.
 
         Args:
-            dataset_path: Path to LoCoMo JSON file
+            dataset_path: Path to LongMemEval JSON file
             compression_at_middle: If True, compress at conversation midpoint
             compression_turn: Fixed compression turn (overrides compression_at_middle)
             retain_recent: Number of recent turns to retain after compression
             rolling_interval: Interval for rolling compression (0 to disable)
             max_turns: Max turns to process per conversation (0 = all)
-            dynamic_compression: Use dynamic compression triggers (topic shift, density, etc.)
-            extraction_mode: "batch" for 40-turn batch extraction, "per_turn" for legacy per-turn
+            dynamic_compression: Use dynamic compression triggers
+            extraction_mode: "batch" for 40-turn batch extraction, "per_turn" for legacy
             load_cache: If True, load cached Canvas state when available
             save_cache: If True, save Canvas state to cache after extraction
             extract_only: If True, only extract and cache, skip QA phase
             qa_parallel: Number of parallel workers for QA phase (1 = sequential)
-            llm_score: Use LLM-based semantic scoring (fairer for synonyms/paraphrases)
+            score_model: LLM judge model name (uses SCORE_MODEL env var or gpt-4o-mini)
         """
         self.compression_at_middle = compression_at_middle
         self.fixed_compression_turn = compression_turn
@@ -585,11 +544,11 @@ class LoCoMoExperimentRunner:
         self.save_cache = save_cache
         self.extract_only = extract_only
         self.qa_parallel = qa_parallel
-        self.llm_score = llm_score
         self._score_client = None  # Lazy init for LLM scoring
+        self._score_model = score_model
 
     def _get_score_client(self):
-        """Get or create OpenAI client for LLM scoring (uses SCORE_API_* config)."""
+        """Get or create OpenAI client for LLM Judge (uses SCORE_API_* config)."""
         if self._score_client is None:
             import os
             from openai import OpenAI
@@ -602,32 +561,51 @@ class LoCoMoExperimentRunner:
             )
         return self._score_client
 
-    def _score_answer(self, answer: str, ground_truth: str, question: str = "") -> LoCoMoScoreResult:
+    def _get_score_model(self) -> str:
+        """Get the LLM judge model name."""
+        if self._score_model:
+            return self._score_model
+        import os
+        return os.getenv("SCORE_MODEL", "gpt-4o-mini")
+
+    def _score_answer(
+        self,
+        answer: str,
+        ground_truth: str,
+        question: str,
+        question_type: str,
+        is_abstention: bool,
+    ) -> LongMemEvalScoreResult:
         """
-        Score an answer using either F1 or LLM-based evaluation.
+        Score an answer using LLM Judge (official LongMemEval protocol).
+
+        LongMemEval always uses LLM Judge evaluation -- there is no F1 fallback.
 
         Args:
             answer: Model's answer
             ground_truth: Expected answer
-            question: Original question (needed for LLM scoring)
+            question: Original question
+            question_type: LongMemEval question type
+            is_abstention: Whether this is an abstention question
 
         Returns:
-            LoCoMoScoreResult
+            LongMemEvalScoreResult
         """
-        import os
-        if self.llm_score:
-            client = self._get_score_client()
-            return score_locomo_answer_llm(
-                answer, ground_truth, question, client,
-                model=os.getenv("SCORE_MODEL", "gpt-4o-mini")
-            )
-        else:
-            return score_locomo_answer(answer, ground_truth)
+        client = self._get_score_client()
+        return score_longmemeval_answer(
+            answer=answer,
+            ground_truth=ground_truth,
+            question=question,
+            question_type=question_type,
+            is_abstention=is_abstention,
+            client=client,
+            model=self._get_score_model(),
+        )
 
-    def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
-        """Load and convert LoCoMo dataset."""
-        print(f"Loading LoCoMo dataset from {path}...")
-        raw_data = load_locomo(path)
+    def _load_dataset(self, path: str) -> List[LongMemEvalConversation]:
+        """Load and convert LongMemEval dataset."""
+        print(f"Loading LongMemEval dataset from {path}...")
+        raw_data = load_longmemeval(path)
         conversations = convert_to_eval_format(raw_data)
         print(f"Loaded {len(conversations)} conversations")
         return conversations
@@ -641,23 +619,37 @@ class LoCoMoExperimentRunner:
         agent_factory: Optional[callable] = None,
         max_questions_per_conv: Optional[int] = None,
         categories: Optional[List[int]] = None,
-    ) -> LoCoMoExperimentResult:
+    ) -> LongMemEvalExperimentResult:
         """
-        Run LoCoMo experiment.
-        """
-        # Reset token usage tracker so every agent run starts from zero
-        try:
-            from experiments import usage_tracker as _ut
-            _ut.reset()
-        except Exception:
-            pass
+        Run LongMemEval experiment.
 
+        Args:
+            agent: The agent to evaluate (used when max_workers=1)
+            num_samples: Number of conversations to evaluate (None = all)
+            verbose: Verbosity level (0=silent, 1=progress, 2=detailed, 3=debug)
+            max_workers: Number of parallel workers for conversations
+            agent_factory: Factory function for creating agent instances (required for parallel)
+            max_questions_per_conv: Max questions per conversation (usually 1 for LongMemEval)
+            categories: Filter by question categories (e.g., [1, 4])
+
+        Returns:
+            LongMemEvalExperimentResult with all results
+        """
         conversations = self.conversations
+
+        # Filter by categories if specified
+        if categories:
+            conversations = [
+                c for c in conversations
+                if any(qa.category in categories for qa in c.qa_pairs)
+            ]
+            if verbose >= 1:
+                print(f"Filtered to {len(conversations)} conversations matching categories {categories}")
+
         if num_samples:
             conversations = conversations[:num_samples]
 
         # Compute config hash for cache identification
-        # Extract config from agent if possible (for CogCanvasAgent)
         agent_config = {}
         if hasattr(agent, 'extractor_model'):
             agent_config['extractor_model'] = agent.extractor_model
@@ -675,7 +667,7 @@ class LoCoMoExperimentRunner:
 
         if verbose >= 1:
             print(f"\n{'='*60}")
-            print(f"LoCoMo Experiment: {agent.name}")
+            print(f"LongMemEval Experiment: {agent.name}")
             print(f"Conversations: {len(conversations)}")
             if self.rolling_interval > 0:
                 print(f"Strategy: Rolling Compression (interval={self.rolling_interval})")
@@ -686,6 +678,7 @@ class LoCoMoExperimentRunner:
             print(f"Retain recent: {self.retain_recent} turns")
             print(f"Max workers: {max_workers}")
             print(f"Verbose level: {verbose}")
+            print(f"Score model: {self._get_score_model()}")
             if max_questions_per_conv:
                 print(f"Max questions per conversation: {max_questions_per_conv}")
             if categories:
@@ -739,15 +732,7 @@ class LoCoMoExperimentRunner:
                         f"F1: {result.avg_f1_score:.0%}"
                     )
 
-        # Capture token usage accumulated during this run (best-effort)
-        token_usage_snapshot = None
-        try:
-            from experiments import usage_tracker as _ut
-            token_usage_snapshot = _ut.snapshot()
-        except Exception:
-            pass
-
-        experiment_result = LoCoMoExperimentResult(
+        experiment_result = LongMemEvalExperimentResult(
             agent_name=agent.name,
             conversation_results=results,
             config={
@@ -758,15 +743,15 @@ class LoCoMoExperimentRunner:
                 "num_samples": num_samples or len(self.conversations),
                 "max_questions_per_conv": max_questions_per_conv,
                 "categories": categories,
-                "benchmark_type": "locomo",
+                "benchmark_type": "longmemeval",
+                "score_model": self._get_score_model(),
             },
             timestamp=datetime.now().isoformat(),
-            token_usage=token_usage_snapshot,
         )
 
         if verbose >= 1:
             print(f"\n{'='*60}")
-            print("LOCOMO RESULTS SUMMARY")
+            print("LONGMEMEVAL RESULTS SUMMARY")
             print(f"{'='*60}")
             for k, v in experiment_result.summary().items():
                 print(f"  {k}: {v}")
@@ -775,22 +760,22 @@ class LoCoMoExperimentRunner:
 
     def _run_parallel(
         self,
-        conversations: List[LoCoMoConversation],
+        conversations: List[LongMemEvalConversation],
         agent_factory: callable,
         max_workers: int,
         verbose: int,
         max_questions_per_conv: Optional[int],
         categories: Optional[List[int]] = None,
-        config_hash: str = None,  # For cache path generation
-    ) -> List[LoCoMoConversationResult]:
+        config_hash: str = None,
+    ) -> List[LongMemEvalConversationResult]:
         """Run conversations in parallel."""
         results = [None] * len(conversations)
         completed = [0]
         lock = threading.Lock()
 
         def process_conv(
-            idx: int, conv: LoCoMoConversation
-        ) -> Tuple[int, LoCoMoConversationResult]:
+            idx: int, conv: LongMemEvalConversation
+        ) -> Tuple[int, LongMemEvalConversationResult]:
             # In parallel mode, only use verbose >= 2 for per-question detail
             conv_verbose = verbose if verbose >= 2 else 0
             try:
@@ -811,7 +796,7 @@ class LoCoMoExperimentRunner:
                 import traceback
                 traceback.print_exc()
                 # Return empty result instead of crashing
-                result = LoCoMoConversationResult(
+                result = LongMemEvalConversationResult(
                     conversation_id=conv.id,
                     num_turns=len(conv.turns),
                     compression_turn=0,
@@ -835,9 +820,9 @@ class LoCoMoExperimentRunner:
 
             return idx, result
 
-        # Sort conversations by number of questions (descending) for better load balancing
+        # Sort conversations by number of turns (descending) for better load balancing
         indexed_convs = list(enumerate(conversations))
-        indexed_convs.sort(key=lambda x: len(x[1].qa_pairs), reverse=True)
+        indexed_convs.sort(key=lambda x: len(x[1].turns), reverse=True)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -931,12 +916,12 @@ class LoCoMoExperimentRunner:
     def _run_single_conversation(
         self,
         agent: Agent,
-        conv: LoCoMoConversation,
+        conv: LongMemEvalConversation,
         verbose: int = 0,
         max_questions: Optional[int] = None,
         categories: Optional[List[int]] = None,
-        config_hash: str = None,  # For cache path generation
-    ) -> LoCoMoConversationResult:
+        config_hash: str = None,
+    ) -> LongMemEvalConversationResult:
         """Run experiment on single conversation."""
         agent.reset()
         start_time = time.time()
@@ -1127,7 +1112,7 @@ class LoCoMoExperimentRunner:
             if verbose >= 1:
                 num_objects = len(agent._canvas._objects) if hasattr(agent, '_canvas') else 0
                 print(f"    [EXTRACT ONLY] Cached {num_objects} objects in {elapsed:.0f}ms")
-            return LoCoMoConversationResult(
+            return LongMemEvalConversationResult(
                 conversation_id=conv.id,
                 num_turns=len(turns_to_process),
                 compression_turn=compression_turn,
@@ -1142,12 +1127,12 @@ class LoCoMoExperimentRunner:
 
     def _answer_single_question_parallel(
         self,
-        qa: LoCoMoQAPair,
-        conv: LoCoMoConversation,
-        context: str,  # Pre-built context string
+        qa: LongMemEvalQAPair,
+        conv: LongMemEvalConversation,
+        context: str,
         answer_model: str,
         prompt_style: str,
-    ) -> LoCoMoQuestionResult:
+    ) -> LongMemEvalQuestionResult:
         """
         Answer a single question in parallel mode.
 
@@ -1161,18 +1146,22 @@ class LoCoMoExperimentRunner:
         q_start = time.time()
 
         # Create independent client for this thread
-        # Use ANSWER_API_KEY/BASE for QA, fallback to generic API_KEY/BASE
         api_key = os.getenv("ANSWER_API_KEY") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("ANSWER_API_BASE") or os.getenv("API_BASE") or os.getenv("OPENAI_API_BASE")
         client = OpenAI(api_key=api_key, base_url=api_base)
 
-        # Build prompt (similar to _extract_answer_from_context)
+        # Build prompt with question_date context
         question = qa.question
+        question_date = qa.question_date
+
         if prompt_style == "cot":
             prompt = f"""Based on the following memory context, answer the question.
 
 ## Memory Context
 {context}
+
+## Current Date
+{question_date}
 
 ## Question
 {question}
@@ -1180,7 +1169,8 @@ class LoCoMoExperimentRunner:
 ## Instructions
 1. Identify relevant facts from the context
 2. Connect facts if needed for multi-hop reasoning
-3. Synthesize a complete answer
+3. Consider temporal information and dates when relevant
+4. Synthesize a complete answer
 
 ## Answer
 Provide a concise, direct answer."""
@@ -1188,6 +1178,8 @@ Provide a concise, direct answer."""
             prompt = f"""Based on the following context, answer the question.
 
 Context: {context}
+
+Current date: {question_date}
 
 Question: {question}
 
@@ -1200,12 +1192,10 @@ Answer:"""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0,
-                verbose=False,  # Suppress retry logs in parallel
-                timeout=60,  # 60s timeout per request to prevent infinite hang
-                max_retries=5,  # Max 5 retries per question to prevent infinite loop
-                call_type="gen",
+                verbose=False,
+                timeout=60,
+                max_retries=5,
             )
-            # Ensure answer is not None
             if answer is None:
                 answer = "Error: LLM returned None"
         except Exception as e:
@@ -1216,25 +1206,24 @@ Answer:"""
 
         latency = (time.time() - q_start) * 1000
 
-        # Score the answer (use LLM scoring if enabled)
-        if self.llm_score:
-            score = score_locomo_answer_llm(
-                answer, qa.answer, qa.question, client,
-                model=os.getenv("ANSWER_MODEL", "glm-4-flash")
-            )
-        else:
-            score = score_locomo_answer(answer, qa.answer)
-
-        # Map evidence IDs to turn numbers
-        evidence_turns = [
-            conv.dialogue_id_to_turn.get(eid, -1) for eid in qa.evidence
-        ]
-
-        return LoCoMoQuestionResult(
+        # Score using LLM Judge (always, for LongMemEval)
+        score = score_longmemeval_answer(
+            answer=answer,
+            ground_truth=qa.answer,
             question=qa.question,
+            question_type=qa.question_type,
+            is_abstention=qa.is_abstention,
+            client=client,
+            model=self._get_score_model(),
+        )
+
+        return LongMemEvalQuestionResult(
+            question_id=qa.question_id,
+            question=qa.question,
+            question_type=qa.question_type,
             category=qa.category,
             category_name=qa.category_name,
-            evidence_turns=evidence_turns,
+            is_abstention=qa.is_abstention,
             ground_truth=qa.answer,
             answer=answer,
             score=score,
@@ -1244,13 +1233,13 @@ Answer:"""
     def _run_qa_phase(
         self,
         agent: Agent,
-        conv: LoCoMoConversation,
+        conv: LongMemEvalConversation,
         compression_turn: int,
         start_time: float,
         verbose: int,
         max_questions: Optional[int],
         categories: Optional[List[int]],
-    ) -> LoCoMoConversationResult:
+    ) -> LongMemEvalConversationResult:
         """Run the Question-Answering phase (supports parallel execution)."""
 
         qa_pairs = conv.qa_pairs
@@ -1264,7 +1253,6 @@ Answer:"""
             qa_pairs = qa_pairs[:max_questions]
 
         # Parallel QA only works for CogCanvas agents (requires _canvas for retrieval)
-        # Other agents must use sequential mode with their own answer_question method
         use_parallel = self.qa_parallel > 1 and len(qa_pairs) > 1 and hasattr(agent, '_canvas') and agent._canvas
 
         if verbose >= 2:
@@ -1280,14 +1268,13 @@ Answer:"""
             # Strategy: Pre-compute retrieval contexts (sequential), then parallel LLM calls
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            # Step 1: Batch embed all questions first (major optimization!)
+            # Step 1: Batch embed all questions first
             if verbose >= 2:
                 print(f"      [Parallel] Step 1a: Batch embedding {len(qa_pairs)} questions...", flush=True)
 
             embed_start = time.time()
             questions = [qa.question for qa in qa_pairs]
 
-            # Batch embed all questions at once
             if hasattr(agent, '_canvas') and agent._canvas:
                 query_embeddings = agent._canvas.batch_embed_queries(questions)
             else:
@@ -1297,17 +1284,16 @@ Answer:"""
             if verbose >= 2:
                 print(f"      [Parallel] Batch embedding done in {embed_ms:.0f}ms", flush=True)
 
-            # Step 1b: Retrieval with pre-computed embeddings (now fast - no API calls)
+            # Step 1b: Retrieval with pre-computed embeddings
             if verbose >= 2:
                 print(f"      [Parallel] Step 1b: Retrieving contexts...", flush=True)
 
-            qa_contexts = []  # List of (qa, context_str)
+            qa_contexts = []
             retrieval_start = time.time()
 
             for qi, (qa, query_emb) in enumerate(zip(qa_pairs, query_embeddings)):
                 if verbose >= 2 and (qi + 1) % 50 == 0:
                     print(f"        Retrieval progress: {qi + 1}/{len(qa_pairs)}", flush=True)
-                # Get retrieval result using pre-computed embedding
                 if hasattr(agent, '_canvas') and agent._canvas:
                     retrieval_result = agent._canvas.retrieve(
                         query=qa.question,
@@ -1315,9 +1301,8 @@ Answer:"""
                         method=getattr(agent, 'retrieval_method', 'hybrid'),
                         include_related=getattr(agent, 'enable_graph_expansion', True),
                         max_hops=getattr(agent, 'graph_hops', 1),
-                        query_embedding=query_emb,  # Use pre-computed embedding!
+                        query_embedding=query_emb,
                     )
-                    # Build context string from objects
                     context_parts = []
                     for obj in retrieval_result.objects:
                         if obj.quote:
@@ -1342,7 +1327,6 @@ Answer:"""
             prompt_style = getattr(agent, 'prompt_style', 'cot')
 
             with ThreadPoolExecutor(max_workers=self.qa_parallel) as executor:
-                # Submit all questions with pre-computed contexts
                 future_to_idx = {
                     executor.submit(
                         self._answer_single_question_parallel,
@@ -1351,23 +1335,17 @@ Answer:"""
                     for i, (qa, context) in enumerate(qa_contexts)
                 }
 
-                # Collect results as they complete
                 results_by_idx = {}
                 completed = 0
                 llm_start_time = time.time()
-                last_progress_time = llm_start_time
-                stall_warned = False
 
                 for future in as_completed(future_to_idx):
                     idx = future_to_idx[future]
                     result = future.result()
                     results_by_idx[idx] = result
                     completed += 1
-                    last_progress_time = time.time()
-                    stall_warned = False  # Reset stall warning on progress
 
                     if verbose >= 2 and (completed % 10 == 0 or completed == len(qa_pairs)):
-                        # Show progress every 10 questions
                         passed_so_far = sum(1 for r in results_by_idx.values() if r.score.passed)
                         elapsed = time.time() - llm_start_time
                         avg_per_q = elapsed / completed if completed > 0 else 0
@@ -1378,7 +1356,6 @@ Answer:"""
                             f"[{elapsed:.0f}s elapsed, ~{eta:.0f}s remaining]", flush=True
                         )
 
-                        # Detailed log at verbose >= 3
                         if verbose >= 3:
                             pending_indices = [future_to_idx[f] for f in future_to_idx if f not in results_by_idx or not f.done()]
                             if pending_indices:
@@ -1390,53 +1367,58 @@ Answer:"""
             # Show sample results for debugging
             if verbose >= 2:
                 print(f"      [Sample Results]", flush=True)
-                # Show first 3 passed and first 3 failed
                 passed_samples = [r for r in question_results if r.score.passed][:3]
                 failed_samples = [r for r in question_results if not r.score.passed][:3]
 
                 for r in passed_samples:
-                    print(f"        ✓ Q: {r.question[:50]}...", flush=True)
+                    print(f"        PASS Q: {r.question[:50]}...", flush=True)
                     print(f"          GT: {r.ground_truth[:50]}...", flush=True)
                     print(f"          Ans: {r.answer[:50]}...", flush=True)
-                    print(f"          F1={r.score.f1_score:.2f}, P={r.score.precision:.2f}, R={r.score.recall:.2f}, EM={r.score.exact_match}", flush=True)
+                    print(f"          Judge: {r.score.judge_response.strip()}", flush=True)
 
                 for r in failed_samples:
-                    print(f"        ✗ Q: {r.question[:50]}...", flush=True)
+                    print(f"        FAIL Q: {r.question[:50]}...", flush=True)
                     print(f"          GT: {r.ground_truth[:50]}...", flush=True)
                     print(f"          Ans: {r.answer[:50]}...", flush=True)
-                    print(f"          F1={r.score.f1_score:.2f}, P={r.score.precision:.2f}, R={r.score.recall:.2f}, EM={r.score.exact_match}", flush=True)
+                    print(f"          Judge: {r.score.judge_response.strip()}", flush=True)
 
         else:
             # === SEQUENTIAL QA ===
             for qi, qa in enumerate(qa_pairs):
                 q_start = time.time()
-                # Only CogCanvasAgent supports verbose in answer_question
+
+                # Build question prompt with question_date
                 if hasattr(agent, '_canvas'):
                     response = agent.answer_question(qa.question, verbose=verbose)
                 else:
                     response = agent.answer_question(qa.question)
+
                 latency = (time.time() - q_start) * 1000
 
-                score = self._score_answer(response.answer, qa.answer, qa.question)
-
-                # Map evidence IDs to turn numbers
-                evidence_turns = [
-                    conv.dialogue_id_to_turn.get(eid, -1) for eid in qa.evidence
-                ]
+                # Score using LLM Judge
+                score = self._score_answer(
+                    answer=response.answer,
+                    ground_truth=qa.answer,
+                    question=qa.question,
+                    question_type=qa.question_type,
+                    is_abstention=qa.is_abstention,
+                )
 
                 if verbose >= 2:
-                    status = "✓" if score.passed else "✗"
-                    score_display = "EXACT" if score.exact_match else f"F1={score.f1_score:.0%}"
+                    status = "PASS" if score.passed else "FAIL"
                     print(
-                        f"      {status} [{conv.id}] [{qa.category_name}] {qa.question[:35]:35s} -> {score_display}"
+                        f"      {status} [{conv.id}] [{qa.category_name}] {qa.question[:35]:35s} -> "
+                        f"Judge: {score.judge_response.strip()}"
                     )
 
                 question_results.append(
-                    LoCoMoQuestionResult(
+                    LongMemEvalQuestionResult(
+                        question_id=qa.question_id,
                         question=qa.question,
+                        question_type=qa.question_type,
                         category=qa.category,
                         category_name=qa.category_name,
-                        evidence_turns=evidence_turns,
+                        is_abstention=qa.is_abstention,
                         ground_truth=qa.answer,
                         answer=response.answer,
                         score=score,
@@ -1451,20 +1433,20 @@ Answer:"""
                 failed_samples = [r for r in question_results if not r.score.passed][:3]
 
                 for r in passed_samples:
-                    print(f"        ✓ Q: {r.question[:50]}...", flush=True)
+                    print(f"        PASS Q: {r.question[:50]}...", flush=True)
                     print(f"          GT: {r.ground_truth[:50]}...", flush=True)
                     print(f"          Ans: {r.answer[:50]}...", flush=True)
-                    print(f"          F1={r.score.f1_score:.2f}, P={r.score.precision:.2f}, R={r.score.recall:.2f}, EM={r.score.exact_match}", flush=True)
+                    print(f"          Judge: {r.score.judge_response.strip()}", flush=True)
 
                 for r in failed_samples:
-                    print(f"        ✗ Q: {r.question[:50]}...", flush=True)
+                    print(f"        FAIL Q: {r.question[:50]}...", flush=True)
                     print(f"          GT: {r.ground_truth[:50]}...", flush=True)
                     print(f"          Ans: {r.answer[:50]}...", flush=True)
-                    print(f"          F1={r.score.f1_score:.2f}, P={r.score.precision:.2f}, R={r.score.recall:.2f}, EM={r.score.exact_match}", flush=True)
+                    print(f"          Judge: {r.score.judge_response.strip()}", flush=True)
 
         total_time = (time.time() - start_time) * 1000
 
-        return LoCoMoConversationResult(
+        return LongMemEvalConversationResult(
             conversation_id=conv.id,
             num_turns=len(conv.turns),
             compression_turn=compression_turn,
@@ -1492,12 +1474,12 @@ def main():
     os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY", "")
     os.environ["OPENAI_API_BASE"] = os.getenv("API_BASE", "")
 
-    parser = argparse.ArgumentParser(description="Run LoCoMo evaluation experiments")
+    parser = argparse.ArgumentParser(description="Run LongMemEval evaluation experiments")
     parser.add_argument(
         "--dataset",
         "-d",
-        default="experiments/data/locomo10.json",
-        help="Path to LoCoMo dataset JSON file",
+        default="experiments/data/longmemeval/data/longmemeval_s_cleaned.json",
+        help="Path to LongMemEval dataset JSON file",
     )
     parser.add_argument(
         "--agent",
@@ -1512,30 +1494,30 @@ def main():
             "cogcanvas-hybrid",
             "cogcanvas-cot",
             "cogcanvas-3hop",
-            "cogcanvas-3hop-rerank",  # New enhanced variants
-            "cogcanvas-qexp",  # Query Expansion + Reranking
-            "cogcanvas-enhanced",  # CoT Extraction + Two-stage Retrieval
-            "cogcanvas-vage",  # Rule-based VAGE
-            "cogcanvas-vage-learned",  # Learned VAGE
-            "cogcanvas-vage-chain",  # Chain-Level VAGE (graph-aware)
-            "cogcanvas-cot-v2",  # CoT V2 prompt
-            "cogcanvas-cot-fusion",  # CoT Fusion prompt
-            # New ablation variants (remove single component from full system)
-            "cogcanvas-no-cot",       # Full - CoT
-            "cogcanvas-no-temporal",  # Full - Temporal
-            "cogcanvas-no-hybrid",    # Full - Hybrid
-            "cogcanvas-no-rerank",    # Full - Reranker
-            "cogcanvas-no-graph",     # Full - Graph expansion
-            "cogcanvas-no-gleaning",  # Full - Gleaning (second-pass extraction)
-            "cogcanvas-minimal",      # Minimal baseline
+            "cogcanvas-3hop-rerank",
+            "cogcanvas-qexp",
+            "cogcanvas-enhanced",
+            "cogcanvas-vage",
+            "cogcanvas-vage-learned",
+            "cogcanvas-vage-chain",
+            "cogcanvas-cot-v2",
+            "cogcanvas-cot-fusion",
+            # Ablation variants
+            "cogcanvas-no-cot",
+            "cogcanvas-no-temporal",
+            "cogcanvas-no-hybrid",
+            "cogcanvas-no-rerank",
+            "cogcanvas-no-graph",
+            "cogcanvas-no-gleaning",
+            "cogcanvas-minimal",
             # Multi-round retrieval variants
-            "cogcanvas-multiround",          # Multi-round retrieval
-            "cogcanvas-multiround-routed",   # Multi-round with query routing
-            "cogcanvas-multiround-expand",   # Multi-round + query expansion
-            "cogcanvas-expand-only",         # Query expansion only (control group)
-            "cogcanvas-smart",               # Smart routing based on retrieval quality
-            "cogcanvas-recall-boost",        # Recall-optimized config (top_k=20, hops=4)
-            "cogcanvas-balanced",            # Balanced config (top_k=15, hops=4)
+            "cogcanvas-multiround",
+            "cogcanvas-multiround-routed",
+            "cogcanvas-multiround-expand",
+            "cogcanvas-expand-only",
+            "cogcanvas-smart",
+            "cogcanvas-recall-boost",
+            "cogcanvas-balanced",
             "native",
             "summarization",
             "rag",
@@ -1577,7 +1559,7 @@ def main():
         "-w",
         type=int,
         default=10,
-        help="Number of parallel workers (default: 1)",
+        help="Number of parallel workers (default: 10)",
     )
     parser.add_argument(
         "--max-questions",
@@ -1589,7 +1571,7 @@ def main():
         "--categories",
         type=str,
         default=None,
-        help="Filter by question categories, e.g. '1,2,3' for single-hop/temporal/multi-hop only",
+        help="Filter by question categories, e.g. '1,4' for info-extraction,temporal",
     )
     parser.add_argument(
         "--verbose",
@@ -1609,11 +1591,10 @@ def main():
         action="store_true",
         help="Print detailed VAGE progress logs",
     )
-
     parser.add_argument(
         "--rolling-interval",
         type=int,
-        default=40,  # Default to Rolling Compression (standard strategy)
+        default=40,
         help="Interval for rolling compression (e.g. 40 turns). 0 to disable.",
     )
     parser.add_argument(
@@ -1654,11 +1635,7 @@ def main():
         default=1,
         help="Number of parallel workers for QA phase per conversation (default: 1 = sequential)",
     )
-    parser.add_argument(
-        "--llm-score",
-        action="store_true",
-        help="Use LLM-based semantic scoring instead of F1 (fairer for synonyms/paraphrases)",
-    )
+    # No --llm-score flag: LongMemEval always uses LLM Judge
 
     args = parser.parse_args()
 
@@ -1670,49 +1647,40 @@ def main():
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
 
         # Default Full Config (SOTA) - v3.3: Recall-optimized
-        # Increased retrieval params to boost recall from 71.8% to 85%+
         config = {
             "enable_graph_expansion": True,
             "enable_temporal_heuristic": True,
-            "enable_gleaning": True,  # Explicitly enabled for paper results
+            "enable_gleaning": True,
             "retrieval_method": "hybrid",
             "prompt_style": "cot",
-            "retrieval_top_k": 15,  # Increased from 10 to 15 for better recall
+            "retrieval_top_k": 15,
             "graph_hops": 3,
-            "use_reranker": True,  # BGE reranking
-            "reranker_candidate_k": 30,  # Increased from 20 to 30 for better recall
+            "use_reranker": True,
+            "reranker_candidate_k": 30,
         }
 
         # =============================================================
-        # Ablation Variants (从 Full System 逐个移除组件)
-        # Full System: Graph + Temporal + Hybrid + CoT + Reranker
+        # Ablation Variants
         # =============================================================
 
-        # 移除 Graph → 禁用图扩展 (兼容旧名 cogcanvas-nograph)
         if args.agent in ("cogcanvas-nograph", "cogcanvas-no-graph"):
             config["enable_graph_expansion"] = False
 
-        # 移除 CoT → 使用 direct prompt
         elif args.agent == "cogcanvas-no-cot":
             config["prompt_style"] = "direct"
 
-        # 移除 Temporal → 禁用时间启发式边
         elif args.agent == "cogcanvas-no-temporal":
             config["enable_temporal_heuristic"] = False
 
-        # 移除 Hybrid → 仅用语义检索
         elif args.agent == "cogcanvas-no-hybrid":
             config["retrieval_method"] = "semantic"
 
-        # 移除 Reranker → 禁用 BGE reranking
         elif args.agent == "cogcanvas-no-rerank":
             config["use_reranker"] = False
 
-        # 移除 Gleaning → 禁用二次提取 (LightRAG-inspired)
         elif args.agent == "cogcanvas-no-gleaning":
             config["enable_gleaning"] = False
 
-        # Minimal Baseline: 仅 Graph 结构，无其他增强
         elif args.agent == "cogcanvas-minimal":
             config = {
                 "enable_graph_expansion": True,
@@ -1724,7 +1692,7 @@ def main():
                 "use_reranker": False,
             }
 
-        # Legacy aliases (保持向后兼容)
+        # Legacy aliases
         elif args.agent == "cogcanvas-baseline":
             config = {
                 "enable_graph_expansion": True,
@@ -1758,7 +1726,6 @@ def main():
                 "retrieval_top_k": 20,
             }
         elif args.agent == "cogcanvas-filter":
-            # Full config with LLM Filtering
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1768,17 +1735,6 @@ def main():
                 "filter_candidate_k": 20,
             }
         elif args.agent == "cogcanvas-3hop":
-            # 3-hop graph expansion (enhanced multi-hop reasoning)
-            config = {
-                "enable_graph_expansion": True,
-                "enable_temporal_heuristic": True,
-                "retrieval_method": "hybrid",
-                "prompt_style": "cot",
-                "retrieval_top_k": 10,
-                "graph_hops": 3,  # 3-hop expansion
-            }
-        elif args.agent == "cogcanvas-3hop-rerank":
-            # 3-hop + reranking (full enhanced config)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1786,10 +1742,18 @@ def main():
                 "prompt_style": "cot",
                 "retrieval_top_k": 10,
                 "graph_hops": 3,
-                "use_reranker": True,  # Enable BGE reranker
+            }
+        elif args.agent == "cogcanvas-3hop-rerank":
+            config = {
+                "enable_graph_expansion": True,
+                "enable_temporal_heuristic": True,
+                "retrieval_method": "hybrid",
+                "prompt_style": "cot",
+                "retrieval_top_k": 10,
+                "graph_hops": 3,
+                "use_reranker": True,
             }
         elif args.agent == "cogcanvas-qexp":
-            # Query Expansion + Reranking (Perplexity-style multi-query)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1799,23 +1763,21 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                "use_query_expansion": True,  # NEW: Enable query expansion
-                "query_expansion_n": 3,  # Generate 3 queries (original + 2 variants)
+                "use_query_expansion": True,
+                "query_expansion_n": 3,
             }
         elif args.agent == "cogcanvas-enhanced":
-            # CoT Extraction + Two-stage Retrieval (Hybrid + Rerank)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
-                "retrieval_method": "hybrid",  # BM25 + Semantic fusion
+                "retrieval_method": "hybrid",
                 "prompt_style": "cot",
-                "retrieval_top_k": 5,  # Final top-k after reranking
+                "retrieval_top_k": 5,
                 "graph_hops": 3,
-                "use_reranker": True,  # Two-stage: retrieve 20 → rerank to 5
-                "filter_candidate_k": 20,  # Coarse retrieval
+                "use_reranker": True,
+                "filter_candidate_k": 20,
             }
         elif args.agent == "cogcanvas-vage":
-            # Rule-based VAGE (heuristic vulnerability model)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1828,7 +1790,6 @@ def main():
                 "vage_budget_k": 10,
             }
         elif args.agent == "cogcanvas-vage-learned":
-            # Learned VAGE (trained vulnerability model)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1841,7 +1802,6 @@ def main():
                 "vage_budget_k": 10,
             }
         elif args.agent == "cogcanvas-cot-v2":
-            # CoT V2 prompt style
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1851,7 +1811,6 @@ def main():
                 "graph_hops": 3,
             }
         elif args.agent == "cogcanvas-cot-fusion":
-            # CoT Fusion prompt style (Multi-Artifact Fusion)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1861,7 +1820,6 @@ def main():
                 "graph_hops": 3,
             }
         elif args.agent == "cogcanvas-vage-chain":
-            # Chain-Level VAGE (graph-aware selection)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1876,7 +1834,6 @@ def main():
         # Multi-Round Retrieval Variants
         # =============================================================
         elif args.agent == "cogcanvas-multiround":
-            # Multi-round retrieval (EverMemOS-inspired agentic recall)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1887,14 +1844,11 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                # Multi-round specific
                 "use_multi_round": True,
                 "max_retrieval_rounds": 3,
-                "confidence_threshold": 0.6,  # 平衡阈值
+                "confidence_threshold": 0.6,
             }
         elif args.agent == "cogcanvas-multiround-routed":
-            # Multi-round with query routing: simple->single-round, complex->multi-round
-            # Addresses the tradeoff: multi-round +24.4pp on multi-hop, -20.8pp on single-hop
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1905,14 +1859,12 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                # Multi-round with routing
                 "use_multi_round": True,
                 "max_retrieval_rounds": 3,
                 "confidence_threshold": 0.7,
-                "use_query_routing": True,  # Enable query complexity routing
+                "use_query_routing": True,
             }
         elif args.agent == "cogcanvas-multiround-expand":
-            # Multi-round + query expansion (full enhanced retrieval)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1923,16 +1875,14 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                # Multi-round + expansion (强制多轮，不用routing)
                 "use_multi_round": True,
                 "max_retrieval_rounds": 3,
-                "confidence_threshold": 0.6,  # 配合更严格的 prompt
+                "confidence_threshold": 0.6,
                 "use_query_expansion": True,
                 "query_expansion_n": 3,
-                "use_query_routing": False,  # 关闭routing，所有问题都走多轮
+                "use_query_routing": False,
             }
         elif args.agent == "cogcanvas-expand-only":
-            # Query expansion only (control group - no multi-round)
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1943,13 +1893,10 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                # Query expansion only (no multi-round)
                 "use_query_expansion": True,
                 "query_expansion_n": 3,
             }
         elif args.agent == "cogcanvas-smart":
-            # Smart routing based on retrieval result quality
-            # Routes to: direct, temporal_sort, multi_round, or expand
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
@@ -1960,43 +1907,36 @@ def main():
                 "graph_hops": 3,
                 "use_reranker": True,
                 "reranker_candidate_k": 20,
-                # Smart routing (retrieval-result-based)
                 "use_smart_routing": True,
-                # Multi-round settings (used when routed to multi_round)
                 "use_multi_round": True,
                 "max_retrieval_rounds": 3,
                 "confidence_threshold": 0.6,
-                # Query expansion settings (used when routed to expand)
                 "use_query_expansion": True,
                 "query_expansion_n": 3,
             }
         elif args.agent == "cogcanvas-recall-boost":
-            # Recall-optimized config: Higher top-k, more graph hops, more candidates
-            # Target: Boost retrieval recall from 71.8% to 85%+
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
                 "enable_gleaning": True,
                 "retrieval_method": "hybrid",
                 "prompt_style": "cot",
-                "retrieval_top_k": 20,  # Increased from 10 to 20
-                "graph_hops": 4,  # Increased from 3 to 4 for deeper graph traversal
+                "retrieval_top_k": 20,
+                "graph_hops": 4,
                 "use_reranker": True,
-                "reranker_candidate_k": 40,  # Increased from 20 to 40 for better recall
+                "reranker_candidate_k": 40,
             }
         elif args.agent == "cogcanvas-balanced":
-            # Balanced config: Fine-tuned middle ground
-            # Goal: Best overall without sacrificing any category
             config = {
                 "enable_graph_expansion": True,
                 "enable_temporal_heuristic": True,
                 "enable_gleaning": True,
                 "retrieval_method": "hybrid",
                 "prompt_style": "cot",
-                "retrieval_top_k": 18,  # Between 15 and 20
-                "graph_hops": 4,  # Keep deeper traversal for multi-hop
+                "retrieval_top_k": 18,
+                "graph_hops": 4,
                 "use_reranker": True,
-                "reranker_candidate_k": 35,  # Between 30 and 40
+                "reranker_candidate_k": 35,
             }
 
         # Apply --vage-mode override if specified
@@ -2050,8 +1990,11 @@ def main():
     else:
         raise NotImplementedError(f"Agent '{args.agent}' not implemented")
 
+    # Determine score model
+    score_model = os.getenv("SCORE_MODEL", "gpt-4o-mini")
+
     # Run experiment
-    runner = LoCoMoExperimentRunner(
+    runner = LongMemEvalExperimentRunner(
         dataset_path=args.dataset,
         compression_at_middle=(args.compression_turn is None),
         compression_turn=args.compression_turn,
@@ -2060,11 +2003,11 @@ def main():
         max_turns=args.max_turns,
         dynamic_compression=args.dynamic_compression,
         extraction_mode=args.extraction_mode,
-        load_cache=not args.no_cache,  # --no-cache disables loading
-        save_cache=not args.no_cache_save,  # --no-cache-save disables saving
+        load_cache=not args.no_cache,
+        save_cache=not args.no_cache_save,
         extract_only=args.extract_only,
         qa_parallel=args.qa_parallel,
-        llm_score=args.llm_score,  # Use LLM-based semantic scoring
+        score_model=score_model,
     )
 
     # Parse categories filter

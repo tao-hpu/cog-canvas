@@ -11,9 +11,13 @@ from pathlib import Path
 from collections import defaultdict
 
 import networkx as nx
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
+
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
 
 
 # Color scheme for different node types (academic/professional style)
