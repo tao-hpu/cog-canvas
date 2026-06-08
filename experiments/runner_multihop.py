@@ -565,7 +565,7 @@ def main():
         choices=[
             "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-cot-v2",
             "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
-            "native", "summarization", "rag", "memgpt-lite", "graphrag-lite", "graphrag"
+            "native", "summarization", "rag", "rag-rerank", "memgpt-lite", "graphrag-lite", "graphrag"
         ],
         default="cogcanvas",
         help="Agent to evaluate",
@@ -701,6 +701,12 @@ def main():
         from experiments.agents.rag_agent import RagAgent
         agent = RagAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: RagAgent(retain_recent=args.retain_recent)
+    elif args.agent == "rag-rerank":
+        from experiments.agents.rag_agent import RagAgent
+        agent = RagAgent(retain_recent=args.retain_recent, use_reranker=True)
+        agent_factory = lambda: RagAgent(
+            retain_recent=args.retain_recent, use_reranker=True
+        )
     elif args.agent == "native":
         from experiments.agents.native_agent import NativeAgent
         agent = NativeAgent(retain_recent=args.retain_recent)
