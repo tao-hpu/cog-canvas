@@ -1,0 +1,602 @@
+{
+  "J001": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_000",
+    "judge_verdict": true,
+    "answer_tokens": 15
+  },
+  "J002": {
+    "pipeline": "chunks",
+    "conversation_id": "edced276",
+    "judge_verdict": true,
+    "answer_tokens": 20
+  },
+  "J003": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_006",
+    "judge_verdict": false,
+    "answer_tokens": 7
+  },
+  "J004": {
+    "pipeline": "chunks",
+    "conversation_id": "75499fd8",
+    "judge_verdict": true,
+    "answer_tokens": 2
+  },
+  "J005": {
+    "pipeline": "artifacts",
+    "conversation_id": "08f4fc43",
+    "judge_verdict": false,
+    "answer_tokens": 38
+  },
+  "J006": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_001",
+    "judge_verdict": true,
+    "answer_tokens": 30
+  },
+  "J007": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 2
+  },
+  "J008": {
+    "pipeline": "chunks",
+    "conversation_id": "07741c45",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J009": {
+    "pipeline": "chunks",
+    "conversation_id": "06f04340",
+    "judge_verdict": false,
+    "answer_tokens": 51
+  },
+  "J010": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_000",
+    "judge_verdict": false,
+    "answer_tokens": 37
+  },
+  "J011": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_001",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J012": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_001",
+    "judge_verdict": false,
+    "answer_tokens": 19
+  },
+  "J013": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_001",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J014": {
+    "pipeline": "chunks",
+    "conversation_id": "a3838d2b",
+    "judge_verdict": false,
+    "answer_tokens": 18
+  },
+  "J015": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J016": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_000",
+    "judge_verdict": false,
+    "answer_tokens": 13
+  },
+  "J017": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_009",
+    "judge_verdict": true,
+    "answer_tokens": 25
+  },
+  "J018": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_008",
+    "judge_verdict": true,
+    "answer_tokens": 12
+  },
+  "J019": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 10
+  },
+  "J020": {
+    "pipeline": "artifacts",
+    "conversation_id": "9ee3ecd6",
+    "judge_verdict": true,
+    "answer_tokens": 15
+  },
+  "J021": {
+    "pipeline": "chunks",
+    "conversation_id": "f685340e_abs",
+    "judge_verdict": false,
+    "answer_tokens": 15
+  },
+  "J022": {
+    "pipeline": "artifacts",
+    "conversation_id": "982b5123",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J023": {
+    "pipeline": "chunks",
+    "conversation_id": "15745da0",
+    "judge_verdict": true,
+    "answer_tokens": 14
+  },
+  "J024": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_002",
+    "judge_verdict": false,
+    "answer_tokens": 11
+  },
+  "J025": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_006",
+    "judge_verdict": false,
+    "answer_tokens": 21
+  },
+  "J026": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_008",
+    "judge_verdict": false,
+    "answer_tokens": 14
+  },
+  "J027": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_000",
+    "judge_verdict": true,
+    "answer_tokens": 32
+  },
+  "J028": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_001",
+    "judge_verdict": true,
+    "answer_tokens": 24
+  },
+  "J029": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_004",
+    "judge_verdict": false,
+    "answer_tokens": 24
+  },
+  "J030": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_000",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J031": {
+    "pipeline": "artifacts",
+    "conversation_id": "e8a79c70",
+    "judge_verdict": false,
+    "answer_tokens": 10
+  },
+  "J032": {
+    "pipeline": "chunks",
+    "conversation_id": "57f827a0",
+    "judge_verdict": false,
+    "answer_tokens": 44
+  },
+  "J033": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": false,
+    "answer_tokens": 17
+  },
+  "J034": {
+    "pipeline": "chunks",
+    "conversation_id": "gpt4_70e84552_abs",
+    "judge_verdict": false,
+    "answer_tokens": 6
+  },
+  "J035": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": false,
+    "answer_tokens": 21
+  },
+  "J036": {
+    "pipeline": "chunks",
+    "conversation_id": "c7dc5443",
+    "judge_verdict": true,
+    "answer_tokens": 10
+  },
+  "J037": {
+    "pipeline": "chunks",
+    "conversation_id": "60d45044",
+    "judge_verdict": true,
+    "answer_tokens": 6
+  },
+  "J038": {
+    "pipeline": "artifacts",
+    "conversation_id": "129d1232",
+    "judge_verdict": false,
+    "answer_tokens": 15
+  },
+  "J039": {
+    "pipeline": "artifacts",
+    "conversation_id": "4adc0475",
+    "judge_verdict": false,
+    "answer_tokens": 21
+  },
+  "J040": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_006",
+    "judge_verdict": false,
+    "answer_tokens": 10
+  },
+  "J041": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_008",
+    "judge_verdict": true,
+    "answer_tokens": 22
+  },
+  "J042": {
+    "pipeline": "artifacts",
+    "conversation_id": "195a1a1b",
+    "judge_verdict": false,
+    "answer_tokens": 44
+  },
+  "J043": {
+    "pipeline": "chunks",
+    "conversation_id": "2b8f3739",
+    "judge_verdict": false,
+    "answer_tokens": 48
+  },
+  "J044": {
+    "pipeline": "artifacts",
+    "conversation_id": "2e6d26dc",
+    "judge_verdict": false,
+    "answer_tokens": 26
+  },
+  "J045": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_002",
+    "judge_verdict": false,
+    "answer_tokens": 41
+  },
+  "J046": {
+    "pipeline": "artifacts",
+    "conversation_id": "a96c20ee",
+    "judge_verdict": false,
+    "answer_tokens": 2
+  },
+  "J047": {
+    "pipeline": "artifacts",
+    "conversation_id": "9bbe84a2",
+    "judge_verdict": true,
+    "answer_tokens": 19
+  },
+  "J048": {
+    "pipeline": "chunks",
+    "conversation_id": "2ce6a0f2",
+    "judge_verdict": false,
+    "answer_tokens": 19
+  },
+  "J049": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_009",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J050": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": true,
+    "answer_tokens": 10
+  },
+  "J051": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J052": {
+    "pipeline": "chunks",
+    "conversation_id": "09ba9854_abs",
+    "judge_verdict": false,
+    "answer_tokens": 29
+  },
+  "J053": {
+    "pipeline": "artifacts",
+    "conversation_id": "b46e15ed",
+    "judge_verdict": true,
+    "answer_tokens": 17
+  },
+  "J054": {
+    "pipeline": "chunks",
+    "conversation_id": "a1cc6108",
+    "judge_verdict": false,
+    "answer_tokens": 9
+  },
+  "J055": {
+    "pipeline": "chunks",
+    "conversation_id": "f523d9fe",
+    "judge_verdict": true,
+    "answer_tokens": 17
+  },
+  "J056": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_006",
+    "judge_verdict": false,
+    "answer_tokens": 23
+  },
+  "J057": {
+    "pipeline": "artifacts",
+    "conversation_id": "81507db6",
+    "judge_verdict": false,
+    "answer_tokens": 32
+  },
+  "J058": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": false,
+    "answer_tokens": 9
+  },
+  "J059": {
+    "pipeline": "artifacts",
+    "conversation_id": "352ab8bd",
+    "judge_verdict": false,
+    "answer_tokens": 34
+  },
+  "J060": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 15
+  },
+  "J061": {
+    "pipeline": "artifacts",
+    "conversation_id": "gpt4_d31cdae3",
+    "judge_verdict": false,
+    "answer_tokens": 29
+  },
+  "J062": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_001",
+    "judge_verdict": true,
+    "answer_tokens": 1
+  },
+  "J063": {
+    "pipeline": "artifacts",
+    "conversation_id": "gpt4_2f56ae70",
+    "judge_verdict": true,
+    "answer_tokens": 18
+  },
+  "J064": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_008",
+    "judge_verdict": true,
+    "answer_tokens": 22
+  },
+  "J065": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_000",
+    "judge_verdict": true,
+    "answer_tokens": 18
+  },
+  "J066": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_002",
+    "judge_verdict": true,
+    "answer_tokens": 10
+  },
+  "J067": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_008",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J068": {
+    "pipeline": "artifacts",
+    "conversation_id": "8c18457d",
+    "judge_verdict": false,
+    "answer_tokens": 30
+  },
+  "J069": {
+    "pipeline": "chunks",
+    "conversation_id": "6a27ffc2",
+    "judge_verdict": true,
+    "answer_tokens": 11
+  },
+  "J070": {
+    "pipeline": "artifacts",
+    "conversation_id": "46a3abf7",
+    "judge_verdict": false,
+    "answer_tokens": 15
+  },
+  "J071": {
+    "pipeline": "artifacts",
+    "conversation_id": "gpt4_4edbafa2",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J072": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_008",
+    "judge_verdict": true,
+    "answer_tokens": 1
+  },
+  "J073": {
+    "pipeline": "artifacts",
+    "conversation_id": "gpt4_21adecb5",
+    "judge_verdict": false,
+    "answer_tokens": 28
+  },
+  "J074": {
+    "pipeline": "chunks",
+    "conversation_id": "gpt4_5dcc0aab",
+    "judge_verdict": true,
+    "answer_tokens": 3
+  },
+  "J075": {
+    "pipeline": "artifacts",
+    "conversation_id": "27016adc",
+    "judge_verdict": true,
+    "answer_tokens": 16
+  },
+  "J076": {
+    "pipeline": "chunks",
+    "conversation_id": "031748ae_abs",
+    "judge_verdict": false,
+    "answer_tokens": 17
+  },
+  "J077": {
+    "pipeline": "artifacts",
+    "conversation_id": "gpt4_0a05b494",
+    "judge_verdict": false,
+    "answer_tokens": 4
+  },
+  "J078": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_006",
+    "judge_verdict": false,
+    "answer_tokens": 10
+  },
+  "J079": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 17
+  },
+  "J080": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_002",
+    "judge_verdict": true,
+    "answer_tokens": 7
+  },
+  "J081": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_007",
+    "judge_verdict": true,
+    "answer_tokens": 19
+  },
+  "J082": {
+    "pipeline": "chunks",
+    "conversation_id": "gpt4_4929293b",
+    "judge_verdict": false,
+    "answer_tokens": 21
+  },
+  "J083": {
+    "pipeline": "chunks",
+    "conversation_id": "gpt4_68e94287",
+    "judge_verdict": true,
+    "answer_tokens": 24
+  },
+  "J084": {
+    "pipeline": "chunks",
+    "conversation_id": "gpt4_d9af6064",
+    "judge_verdict": true,
+    "answer_tokens": 18
+  },
+  "J085": {
+    "pipeline": "artifacts",
+    "conversation_id": "35a27287",
+    "judge_verdict": true,
+    "answer_tokens": 24
+  },
+  "J086": {
+    "pipeline": "artifacts",
+    "conversation_id": "3f1e9474",
+    "judge_verdict": false,
+    "answer_tokens": 13
+  },
+  "J087": {
+    "pipeline": "artifacts",
+    "conversation_id": "89941a93",
+    "judge_verdict": true,
+    "answer_tokens": 19
+  },
+  "J088": {
+    "pipeline": "chunks",
+    "conversation_id": "a96c20ee",
+    "judge_verdict": true,
+    "answer_tokens": 2
+  },
+  "J089": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_008",
+    "judge_verdict": false,
+    "answer_tokens": 6
+  },
+  "J090": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_009",
+    "judge_verdict": false,
+    "answer_tokens": 23
+  },
+  "J091": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_003",
+    "judge_verdict": false,
+    "answer_tokens": 3
+  },
+  "J092": {
+    "pipeline": "chunks",
+    "conversation_id": "505af2f5",
+    "judge_verdict": true,
+    "answer_tokens": 44
+  },
+  "J093": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": false,
+    "answer_tokens": 21
+  },
+  "J094": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_003",
+    "judge_verdict": true,
+    "answer_tokens": 10
+  },
+  "J095": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_000",
+    "judge_verdict": false,
+    "answer_tokens": 18
+  },
+  "J096": {
+    "pipeline": "chunks",
+    "conversation_id": "locomo_001",
+    "judge_verdict": false,
+    "answer_tokens": 14
+  },
+  "J097": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_005",
+    "judge_verdict": false,
+    "answer_tokens": 9
+  },
+  "J098": {
+    "pipeline": "artifacts",
+    "conversation_id": "c9f37c46",
+    "judge_verdict": false,
+    "answer_tokens": 26
+  },
+  "J099": {
+    "pipeline": "artifacts",
+    "conversation_id": "locomo_004",
+    "judge_verdict": true,
+    "answer_tokens": 5
+  },
+  "J100": {
+    "pipeline": "chunks",
+    "conversation_id": "86f00804",
+    "judge_verdict": true,
+    "answer_tokens": 13
+  }
+}
