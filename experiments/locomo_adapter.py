@@ -36,12 +36,17 @@ class LoCoMoQAPair:
     question: str
     answer: str
     evidence: List[str]  # List of dialogue IDs (e.g., ["D1:3", "D2:5"])
-    category: int  # 1=single-hop, 2=temporal, 3=multi-hop
+    category: int  # 1=single-hop, 2=temporal, 3=multi-hop, 4=open-domain, 5=adversarial
+    # Category 5 (adversarial): the question is unanswerable from the
+    # conversation; `answer` holds the plausible-but-wrong trap answer
+    # (dataset field `adversarial_answer`). Correct behavior = abstain.
+    is_adversarial: bool = False
 
     @property
     def category_name(self) -> str:
         """Get human-readable category name."""
-        return {1: "single-hop", 2: "temporal", 3: "multi-hop"}.get(self.category, "unknown")
+        return {1: "single-hop", 2: "temporal", 3: "multi-hop",
+                4: "open-domain", 5: "adversarial"}.get(self.category, "unknown")
 
 
 @dataclass
@@ -200,17 +205,27 @@ def convert_to_eval_format(locomo_data: List[dict]) -> List[LoCoMoConversation]:
             if turn.user == "":
                 turn.user = "[Continued]"
 
-        # Convert QA pairs (skip those without answers)
-        qa_pairs = [
-            LoCoMoQAPair(
-                question=qa['question'],
-                answer=qa['answer'] if isinstance(qa['answer'], str) else str(qa['answer']),
-                evidence=qa['evidence'],
-                category=qa['category']
-            )
-            for qa in qa_data
-            if 'answer' in qa and qa['answer']  # Only include QA pairs with answers
-        ]
+        # Convert QA pairs. Category 5 (adversarial) has no `answer` field;
+        # its `adversarial_answer` is the trap answer and the question is
+        # unanswerable -- include it flagged so the runner can apply
+        # abstention-aware judging.
+        qa_pairs = []
+        for qa in qa_data:
+            if qa.get('category') == 5 and qa.get('adversarial_answer'):
+                qa_pairs.append(LoCoMoQAPair(
+                    question=qa['question'],
+                    answer=str(qa['adversarial_answer']),
+                    evidence=qa['evidence'],
+                    category=5,
+                    is_adversarial=True,
+                ))
+            elif 'answer' in qa and qa['answer']:
+                qa_pairs.append(LoCoMoQAPair(
+                    question=qa['question'],
+                    answer=qa['answer'] if isinstance(qa['answer'], str) else str(qa['answer']),
+                    evidence=qa['evidence'],
+                    category=qa['category'],
+                ))
 
         # Create conversation ID
         conv_id = f"locomo_{idx:03d}"

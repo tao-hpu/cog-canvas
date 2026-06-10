@@ -342,6 +342,89 @@ Reply with ONLY one word: CORRECT or INCORRECT"""
     )
 
 
+# Lexical fallback for adversarial judging when --llm-score is off.
+ABSTENTION_PATTERNS = re.compile(
+    r"not (mentioned|stated|specified|provided|available|discussed|found)"
+    r"|no (information|mention|record)"
+    r"|(conversation|context|text) does(n't| not) (mention|say|state|specify|contain)"
+    r"|cannot (be )?(determine|answer|find)|can't (determine|answer|find)"
+    r"|unable to (determine|answer|find)|there is no\b|unknown\b|i don't know",
+    re.IGNORECASE,
+)
+
+
+def score_locomo_answer_abstention(
+    answer: str,
+    adversarial_answer: str,
+    question: str,
+    client=None,
+    model: str = "glm-4-flash",
+) -> LoCoMoScoreResult:
+    """
+    Score a category-5 (adversarial) answer with an abstention-aware judge.
+
+    The question is unanswerable from the conversation; `adversarial_answer`
+    is the dataset's plausible-but-wrong trap. Correct = the model abstains
+    (says the information is not in the conversation). Incorrect = the model
+    asserts the trap answer or fabricates any other specific answer.
+
+    With a client, uses an LLM judge (mirrors the LongMemEval abstention
+    template); without one, falls back to a lexical abstention check.
+    """
+    from experiments.llm_utils import call_llm_with_retry
+
+    llm_score = None
+    if client is not None:
+        # Mirrors the official LongMemEval abstention judge template. The trap
+        # answer is deliberately NOT shown to the judge: the only question is
+        # whether the model abstained, and showing a reference answer pulls
+        # the judge back into semantic-match habits (verified empirically:
+        # a CORRECT/INCORRECT framing with the trap shown passes trap-asserting
+        # answers).
+        prompt = (
+            "I will give you a question that cannot be answered from the "
+            "conversation it was asked about, and a response from a model. "
+            "The correct behavior is to identify that the asked information "
+            "is not available. Please answer yes if the model identifies the "
+            "question as unanswerable -- for example, it says the information "
+            "is not mentioned, is incomplete, or cannot be determined. Answer "
+            "no if the model asserts a specific answer as fact."
+            f"\n\nQuestion: {question}\n\nModel Response: {answer}"
+            "\n\nDoes the model correctly identify the question as "
+            "unanswerable? Answer yes or no only."
+        )
+        try:
+            response = call_llm_with_retry(
+                client=client,
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0,
+                call_type="judge",
+            )
+            judgment = response.strip().lower()
+            llm_score = 1.0 if judgment.startswith("yes") else 0.0
+        except Exception as e:
+            print(f"Abstention LLM scoring failed: {e}, falling back to lexical check")
+
+    if llm_score is None:
+        llm_score = 1.0 if ABSTENTION_PATTERNS.search(answer or "") else 0.0
+
+    # Token stats vs. the trap answer kept for reference only; passed comes
+    # from the abstention judgment via f1_score.
+    f1, precision, recall, pred_tokens, truth_tokens = compute_f1_score(answer, adversarial_answer)
+    return LoCoMoScoreResult(
+        f1_score=llm_score,
+        precision=precision,
+        recall=recall,
+        exact_match=llm_score == 1.0,
+        prediction_tokens=pred_tokens,
+        ground_truth_tokens=truth_tokens,
+        answer=answer,
+        ground_truth=adversarial_answer,
+    )
+
+
 # =============================================================================
 # Results
 # =============================================================================
@@ -608,19 +691,30 @@ class LoCoMoExperimentRunner:
             )
         return self._score_client
 
-    def _score_answer(self, answer: str, ground_truth: str, question: str = "") -> LoCoMoScoreResult:
+    def _score_answer(
+        self, answer: str, ground_truth: str, question: str = "",
+        is_adversarial: bool = False,
+    ) -> LoCoMoScoreResult:
         """
         Score an answer using either F1 or LLM-based evaluation.
 
         Args:
             answer: Model's answer
-            ground_truth: Expected answer
+            ground_truth: Expected answer (trap answer for adversarial questions)
             question: Original question (needed for LLM scoring)
+            is_adversarial: Category-5 question -- judge abstention instead of
+                answer match (correct = says info is not in the conversation)
 
         Returns:
             LoCoMoScoreResult
         """
         import os
+        if is_adversarial:
+            client = self._get_score_client() if self.llm_score else None
+            return score_locomo_answer_abstention(
+                answer, ground_truth, question, client,
+                model=os.getenv("SCORE_MODEL", "gpt-4o-mini")
+            )
         if self.llm_score:
             client = self._get_score_client()
             return score_locomo_answer_llm(
@@ -1434,7 +1528,10 @@ Answer:"""
                     response = agent.answer_question(qa.question)
                 latency = (time.time() - q_start) * 1000
 
-                score = self._score_answer(response.answer, qa.answer, qa.question)
+                score = self._score_answer(
+                    response.answer, qa.answer, qa.question,
+                    is_adversarial=getattr(qa, "is_adversarial", False),
+                )
 
                 # Map evidence IDs to turn numbers
                 evidence_turns = [
