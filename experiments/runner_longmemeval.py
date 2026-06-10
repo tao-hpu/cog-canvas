@@ -665,6 +665,17 @@ class LongMemEvalExperimentRunner:
             agent_config['enable_temporal_heuristic'] = agent.enable_temporal_heuristic
         if hasattr(agent, 'enable_gleaning'):
             agent_config['enable_gleaning'] = agent.enable_gleaning
+        # Representation mode MUST be part of the cache identity: artifacts,
+        # chunks, and union runs produce incompatible canvases. Omitting these
+        # made all configs share one hash and silently load each other's stores.
+        if hasattr(agent, 'chunks_mode'):
+            agent_config['chunks_mode'] = agent.chunks_mode
+        if hasattr(agent, 'chunks_chunk_size'):
+            agent_config['chunks_chunk_size'] = agent.chunks_chunk_size
+        if hasattr(agent, 'chunks_overlap'):
+            agent_config['chunks_overlap'] = agent.chunks_overlap
+        if hasattr(agent, 'union_mode'):
+            agent_config['union_mode'] = agent.union_mode
         agent_config['rolling_interval'] = self.rolling_interval
 
         # Generate config_hash if either load or save cache is enabled
