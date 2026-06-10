@@ -41,6 +41,7 @@ class CogCanvasAgent(Agent):
         answer_model: str = None,  # None = load from env (ANSWER_MODEL)
         embedding_model: str = None,  # None = load from env
         retrieval_top_k: int = 15,  # Increased from 10 to 15 for better recall
+        inject_max_tokens: int = 5000,  # Evidence token budget for context injection
         enable_graph_expansion: bool = True,  # New flag for ablation
         graph_hops: int = 1,  # Number of hops for graph expansion (default 1 for backward compat)
         use_reranker: bool = False,  # Disable reranking to test baseline speed
@@ -82,6 +83,17 @@ class CogCanvasAgent(Agent):
         smart_routing_low_score: float = 0.5,  # Threshold for "low confidence" query expansion
         # Cache Parameters
         storage_path: str = None,  # Path to cache Canvas state
+        # Chunks-as-artifacts ablation (P1-7): skip LLM extraction; ingest
+        # fixed-size sliding-window chunks as CanvasObjects. Graph inference
+        # still runs over chunk embeddings. Matches RAG baseline chunking
+        # (chunk_size=512 chars, overlap=100) for parity.
+        chunks_mode: bool = False,
+        chunks_chunk_size: int = 512,
+        chunks_overlap: int = 100,
+        # W4 union storage: keep verbatim chunks AND extracted artifacts in
+        # the same store (batch extraction mode only). Tests whether structure
+        # should augment rather than replace verbatim text.
+        union_mode: bool = False,
     ):
         """
         Initialize CogCanvas agent.
@@ -138,6 +150,7 @@ class CogCanvasAgent(Agent):
         )
 
         self.retrieval_top_k = retrieval_top_k
+        self.inject_max_tokens = inject_max_tokens
         self.enable_graph_expansion = enable_graph_expansion
         self.graph_hops = graph_hops
         self.use_reranker = use_reranker
@@ -188,6 +201,12 @@ class CogCanvasAgent(Agent):
 
         # Cache config
         self.storage_path = storage_path
+
+        # Chunks-as-artifacts ablation
+        self.chunks_mode = chunks_mode
+        self.chunks_chunk_size = chunks_chunk_size
+        self.chunks_overlap = chunks_overlap
+        self.union_mode = union_mode
 
         # Initialize LLM client for answering (uses ANSWER_API_* if available)
         self._client = None
@@ -297,6 +316,10 @@ class CogCanvasAgent(Agent):
             parts.append("Routed")
         if self.use_smart_routing:
             parts.append("SmartRoute")
+        if self.chunks_mode:
+            parts.append(f"Chunks{self.chunks_chunk_size}")
+        if self.union_mode:
+            parts.append(f"Union{self.chunks_chunk_size}")
 
         config_str = "+".join(parts) if parts else "Baseline"
         return f"CogCanvas({config_str})"
@@ -329,6 +352,11 @@ class CogCanvasAgent(Agent):
         # Store in history
         self._history.append(turn)
 
+        # Chunks ablation: defer to batch ingestion at the end of the dialog
+        # so chunks span turn boundaries naturally. Just buffer history here.
+        if self.chunks_mode:
+            return
+
         # Extract canvas objects from this turn
         metadata = {"turn_id": turn.turn_id}
         # Get session_datetime if available
@@ -359,6 +387,16 @@ class CogCanvasAgent(Agent):
         """
         if not turns:
             return
+
+        # P1-7 Chunks ablation: skip LLM extraction, ingest fixed-size chunks
+        if self.chunks_mode:
+            self._chunks_ingest(turns, verbose=verbose)
+            return
+
+        # W4 union storage: ingest verbatim chunks, then fall through to
+        # artifact extraction so both representations share one store.
+        if self.union_mode:
+            self._chunks_ingest(turns, verbose=verbose)
 
         start = time.time()
 
@@ -414,6 +452,117 @@ class CogCanvasAgent(Agent):
         if verbose >= 1:
             num_objects = len(self._canvas._objects)
             print(f"      [Batch Extract] {len(turns)} turns in {elapsed:.0f}ms, Canvas: {num_objects} objects")
+
+    def _chunks_ingest(self, turns: List[ConversationTurn], verbose: int = 0) -> None:
+        """
+        P1-7 Chunks-instead-of-artifacts ablation.
+
+        Replaces the LLM artifact extractor with fixed-size sliding-window
+        chunks of raw transcript, wrapped as CanvasObjects. Same embedding
+        backend and same graph inference step run afterwards, so this
+        isolates the contribution of LLM-driven verbatim extraction.
+
+        Chunk parameters match the RAG baseline (chunk_size=512 chars,
+        overlap=100) for parity with Table 4 / Table 6 numbers.
+        """
+        from cogcanvas.models import CanvasObject, ObjectType
+
+        start = time.time()
+
+        # 1. Build full text with turn markers (mirrors RagAgent._process_into_chunks)
+        full_text = ""
+        turn_mapping = []  # (start_char, end_char, turn_id, session_datetime)
+        for turn in turns:
+            s_idx = len(full_text)
+            session_dt = getattr(turn, "session_datetime", None)
+            dt_marker = f" (Session: {session_dt})" if session_dt else ""
+            turn_text = (
+                f"[Turn {turn.turn_id}{dt_marker}] User: {turn.user}\n"
+                f"Assistant: {turn.assistant}\n\n"
+            )
+            full_text += turn_text
+            turn_mapping.append((s_idx, len(full_text), turn.turn_id, session_dt))
+
+        # 2. Slide window
+        chunks_text = []
+        chunk_source_turns = []
+        chunk_session_dts = []
+        cursor = 0
+        chunk_size = self.chunks_chunk_size
+        overlap = self.chunks_overlap
+        while cursor < len(full_text):
+            end = min(cursor + chunk_size, len(full_text))
+            if end < len(full_text):
+                search_start = max(cursor, int(end - chunk_size * 0.2))
+                last_nl = full_text.rfind("\n", search_start, end)
+                if last_nl != -1:
+                    end = last_nl + 1
+            content = full_text[cursor:end]
+            chunks_text.append(content)
+            sources = []
+            session_dt_for_chunk = None
+            for t_start, t_end, t_id, t_dt in turn_mapping:
+                if not (t_end <= cursor or t_start >= end):
+                    sources.append(t_id)
+                    if session_dt_for_chunk is None and t_dt:
+                        session_dt_for_chunk = t_dt
+            chunk_source_turns.append(sources)
+            chunk_session_dts.append(session_dt_for_chunk)
+            if end >= len(full_text):
+                break
+            cursor = end - overlap
+            if cursor <= 0 or cursor >= end:
+                cursor = end
+
+        if not chunks_text:
+            self._history.extend(turns)
+            return
+
+        # 3. Batch-embed (use the same embedding backend the Canvas uses)
+        embeddings = self._canvas._embedding_backend.embed_batch(chunks_text)
+
+        # 4. Wrap as CanvasObjects and add. Mark verbatim chunk as `quote` so
+        #    downstream prompts (which print obj.content/quote) still cite text.
+        new_objects = []
+        for content, embedding, sources, sess_dt in zip(
+            chunks_text, embeddings, chunk_source_turns, chunk_session_dts
+        ):
+            primary_turn = sources[0] if sources else 0
+            obj = CanvasObject(
+                type=ObjectType.KEY_FACT,
+                content=content.strip(),
+                quote=content.strip(),
+                source="dialogue",
+                turn_id=primary_turn,
+                session_datetime=sess_dt,
+                embedding=embedding,
+            )
+            self._canvas.add(obj, compute_embedding=False)
+            new_objects.append(obj)
+
+        # 5. Run graph inference over chunk embeddings — same logic as the
+        #    artifact path. This may or may not create edges depending on
+        #    semantic overlap; that is exactly the question the ablation
+        #    is asking.
+        if new_objects:
+            try:
+                self._canvas._infer_relations(
+                    new_objects,
+                    reference_threshold=self.reference_threshold,
+                    causal_threshold=self.causal_threshold,
+                    enable_temporal_heuristic=self.enable_temporal_heuristic,
+                )
+            except Exception as e:
+                if verbose >= 2:
+                    print(f"      [Chunks] _infer_relations failed: {e}")
+
+        self._history.extend(turns)
+        elapsed = (time.time() - start) * 1000
+        if verbose >= 1:
+            print(
+                f"      [Chunks Ingest] {len(turns)} turns -> {len(new_objects)} chunks "
+                f"({chunk_size}c, {overlap}o) in {elapsed:.0f}ms"
+            )
 
     def store_turns_only(self, turns: List[ConversationTurn]) -> None:
         """
@@ -1239,11 +1388,10 @@ Return ONLY one word: 'simple' or 'complex'"""
                 )
 
         # Step 2: Build context from retrieved objects
-        # Increased to 5000 to unleash full potential (RAG uses ~1500-2000, we go bigger)
         canvas_context = self._canvas.inject(
             retrieval_result,
             format="compact",
-            max_tokens=5000,
+            max_tokens=self.inject_max_tokens,
         )
 
         # Step 3: Build answer
@@ -1343,7 +1491,7 @@ Return ONLY one word: 'simple' or 'complex'"""
             canvas_context = self._canvas.inject(
                 merged_result,
                 format="compact",
-                max_tokens=5000,
+                max_tokens=self.inject_max_tokens,
             )
 
             # Step 4: Generate draft answer

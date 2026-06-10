@@ -503,6 +503,11 @@ class MultiHopExperimentRunner:
                 if turn.turn_id > self.compression_turn:
                     agent.process_turn(turn)
 
+        # Chunks ablation: per-turn processing only buffers history; ingest the
+        # whole transcript as sliding-window chunks in one batch call.
+        if getattr(agent, "chunks_mode", False):
+            agent.batch_extract(agent._history)
+
         # Phase 4: Ask multi-hop questions
         question_results = []
         for q in conv.questions:
@@ -563,7 +568,8 @@ def main():
     parser.add_argument(
         "--agent", "-a",
         choices=[
-            "cogcanvas", "cogcanvas-nograph", "cogcanvas-filter", "cogcanvas-cot-v2",
+            "cogcanvas", "cogcanvas-nograph", "cogcanvas-chunks", "cogcanvas-chunks-nograph",
+            "cogcanvas-filter", "cogcanvas-cot-v2",
             "cogcanvas-baseline", "cogcanvas-temporal", "cogcanvas-hybrid", "cogcanvas-cot",
             "native", "summarization", "rag", "rag-rerank", "memgpt-lite", "graphrag-lite", "graphrag"
         ],
@@ -647,7 +653,19 @@ def main():
         
         if args.agent == "cogcanvas-nograph":
             config["enable_graph_expansion"] = False
-        
+
+        # P1-7 Chunks ablation: verbatim 512-char chunks instead of LLM-extracted
+        # artifacts; rest of the pipeline (graph/retrieval/rerank/prompting) unchanged.
+        elif args.agent == "cogcanvas-chunks":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+        elif args.agent == "cogcanvas-chunks-nograph":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_graph_expansion"] = False
+
         # Ablation Variants
         elif args.agent == "cogcanvas-baseline":
             config = {

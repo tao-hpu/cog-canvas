@@ -66,6 +66,12 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         "enable_gleaning": config.get("enable_gleaning", True),  # Added for gleaning ablation
         "extraction_mode": extraction_mode,
         "rolling_interval": config.get("rolling_interval", 40),
+        # P1-7 chunks ablation: must not share cache with LLM-extracted artifacts
+        "chunks_mode": config.get("chunks_mode", False),
+        "chunks_chunk_size": config.get("chunks_chunk_size", 512),
+        "chunks_overlap": config.get("chunks_overlap", 100),
+        # W4 union storage: chunks+artifacts canvas must not share either cache
+        "union_mode": config.get("union_mode", False),
     }
     config_str = json.dumps(extraction_config, sort_keys=True)
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
@@ -1527,6 +1533,9 @@ def main():
             "cogcanvas-no-rerank",    # Full - Reranker
             "cogcanvas-no-graph",     # Full - Graph expansion
             "cogcanvas-no-gleaning",  # Full - Gleaning (second-pass extraction)
+            "cogcanvas-chunks",       # P1-7: chunks-as-artifacts ablation (graph ON)
+            "cogcanvas-chunks-nograph",  # P1-7 control C: chunks + graph OFF
+            "cogcanvas-union",  # W4: verbatim chunks AND extracted artifacts in one store
             "cogcanvas-minimal",      # Minimal baseline
             # Multi-round retrieval variants
             "cogcanvas-multiround",          # Multi-round retrieval
@@ -1686,6 +1695,38 @@ def main():
         help="GraphRAG entity-extraction gleaning passes (requires reindex).",
     )
 
+    # P1-7 chunks ablation overrides (only when --agent cogcanvas-chunks*)
+    parser.add_argument(
+        "--chunks-chunk-size",
+        type=int,
+        default=None,
+        help="Override sliding-window chunk size in chars (chunks variant).",
+    )
+    parser.add_argument(
+        "--chunks-overlap",
+        type=int,
+        default=None,
+        help="Override sliding-window overlap in chars (chunks variant).",
+    )
+    parser.add_argument(
+        "--retrieval-top-k",
+        type=int,
+        default=None,
+        help="Override final retrieval top-k (cogcanvas variants).",
+    )
+    parser.add_argument(
+        "--reranker-candidate-k",
+        type=int,
+        default=None,
+        help="Override reranker candidate pool size (cogcanvas variants).",
+    )
+    parser.add_argument(
+        "--inject-max-tokens",
+        type=int,
+        default=None,
+        help="Override evidence token budget for context injection (cogcanvas variants).",
+    )
+
     args = parser.parse_args()
 
     # Create agent and agent factory
@@ -1737,6 +1778,35 @@ def main():
         # 移除 Gleaning → 禁用二次提取 (LightRAG-inspired)
         elif args.agent == "cogcanvas-no-gleaning":
             config["enable_gleaning"] = False
+
+        # P1-7 Chunks ablation: replace LLM-extracted artifacts with
+        # fixed-size 512-char sliding-window chunks (RAG-baseline parity).
+        # Graph + retrieval + reranker pipeline unchanged → isolates the
+        # contribution of LLM-driven verbatim extraction.
+        elif args.agent == "cogcanvas-chunks":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+
+        elif args.agent == "cogcanvas-chunks-nograph":
+            # P1-7 control C: chunks + graph_expansion OFF
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_graph_expansion"] = False
+
+        # W4 union storage: verbatim chunks AND extracted artifacts in one store
+        elif args.agent == "cogcanvas-union":
+            config["union_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+
+        # P1-7 CLI overrides for chunks variants (controls A/B)
+        if config.get("chunks_mode"):
+            if args.chunks_chunk_size is not None:
+                config["chunks_chunk_size"] = args.chunks_chunk_size
+            if args.chunks_overlap is not None:
+                config["chunks_overlap"] = args.chunks_overlap
 
         # Minimal Baseline: 仅 Graph 结构，无其他增强
         elif args.agent == "cogcanvas-minimal":
@@ -2032,6 +2102,14 @@ def main():
         # Apply --vage-verbose if specified
         if args.vage_verbose:
             config["vage_verbose"] = True
+
+        # Retrieval/budget overrides (budget-matched experiments, W3)
+        if args.retrieval_top_k is not None:
+            config["retrieval_top_k"] = args.retrieval_top_k
+        if args.reranker_candidate_k is not None:
+            config["reranker_candidate_k"] = args.reranker_candidate_k
+        if args.inject_max_tokens is not None:
+            config["inject_max_tokens"] = args.inject_max_tokens
 
         agent_factory = lambda: CogCanvasAgent(**config)
         agent = agent_factory()

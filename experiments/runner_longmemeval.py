@@ -66,6 +66,12 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         "enable_gleaning": config.get("enable_gleaning", True),
         "extraction_mode": extraction_mode,
         "rolling_interval": config.get("rolling_interval", 40),
+        # P1-7 chunks ablation: must not share cache with LLM-extracted artifacts
+        "chunks_mode": config.get("chunks_mode", False),
+        "chunks_chunk_size": config.get("chunks_chunk_size", 512),
+        "chunks_overlap": config.get("chunks_overlap", 100),
+        # W4 union storage: chunks+artifacts canvas must not share either cache
+        "union_mode": config.get("union_mode", False),
     }
     config_str = json.dumps(extraction_config, sort_keys=True)
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
@@ -1509,6 +1515,8 @@ def main():
             "cogcanvas-no-rerank",
             "cogcanvas-no-graph",
             "cogcanvas-no-gleaning",
+            "cogcanvas-chunks",          # P1-7: chunks-as-artifacts ablation (graph ON)
+            "cogcanvas-chunks-nograph",  # P1-7: chunks + graph OFF
             "cogcanvas-minimal",
             # Multi-round retrieval variants
             "cogcanvas-multiround",
@@ -1637,6 +1645,20 @@ def main():
     )
     # No --llm-score flag: LongMemEval always uses LLM Judge
 
+    # P1-7 chunks ablation overrides (only when --agent cogcanvas-chunks*)
+    parser.add_argument(
+        "--chunks-chunk-size",
+        type=int,
+        default=None,
+        help="Override sliding-window chunk size in chars (chunks variant).",
+    )
+    parser.add_argument(
+        "--chunks-overlap",
+        type=int,
+        default=None,
+        help="Override sliding-window overlap in chars (chunks variant).",
+    )
+
     args = parser.parse_args()
 
     # Create agent and agent factory
@@ -1680,6 +1702,26 @@ def main():
 
         elif args.agent == "cogcanvas-no-gleaning":
             config["enable_gleaning"] = False
+
+        # P1-7: chunks-as-artifacts ablation (graph ON)
+        elif args.agent == "cogcanvas-chunks":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+
+        # P1-7: chunks + graph OFF (winning config on LoCoMo)
+        elif args.agent == "cogcanvas-chunks-nograph":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_graph_expansion"] = False
+
+        # P1-7 CLI overrides for chunks variants
+        if config.get("chunks_mode"):
+            if getattr(args, "chunks_chunk_size", None) is not None:
+                config["chunks_chunk_size"] = args.chunks_chunk_size
+            if getattr(args, "chunks_overlap", None) is not None:
+                config["chunks_overlap"] = args.chunks_overlap
 
         elif args.agent == "cogcanvas-minimal":
             config = {

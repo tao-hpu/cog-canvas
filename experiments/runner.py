@@ -524,6 +524,14 @@ class ExperimentRunner:
             if remaining_turns and verbose:
                 print(" done")
 
+        # Chunks ablation: per-turn processing only buffers history; ingest the
+        # whole transcript as sliding-window chunks in one batch call so chunks
+        # span turn boundaries (mirrors runner_locomo / runner_longmemeval flow).
+        if getattr(agent, "chunks_mode", False):
+            start = time.time()
+            agent.batch_extract(agent._history)
+            total_extraction_time += (time.time() - start) * 1000
+
         # Phase 4: Ask recall questions
         if verbose:
             print(f"    Phase 4: Testing {len(conv.planted_facts)} facts...")
@@ -574,7 +582,7 @@ def main():
     )
     parser.add_argument(
         "--agent", "-a",
-        choices=["cogcanvas", "cogcanvas-nograph", "native", "summarization", "rag", "memgpt-lite", "graphrag-lite", "graphrag"],
+        choices=["cogcanvas", "cogcanvas-nograph", "cogcanvas-chunks", "cogcanvas-chunks-nograph", "native", "summarization", "rag", "memgpt-lite", "graphrag-lite", "graphrag"],
         default="cogcanvas",
         help="Agent to evaluate",
     )
@@ -632,6 +640,20 @@ def main():
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
         agent = CogCanvasAgent(enable_graph_expansion=False)
         agent_factory = lambda: CogCanvasAgent(enable_graph_expansion=False)
+    elif args.agent == "cogcanvas-chunks":
+        # P1-7 Chunks ablation: verbatim 512-char chunks instead of LLM-extracted
+        # artifacts; graph + retrieval + reranker pipeline unchanged.
+        from experiments.agents.cogcanvas_agent import CogCanvasAgent
+        agent = CogCanvasAgent(enable_graph_expansion=True, chunks_mode=True,
+                               chunks_chunk_size=512, chunks_overlap=100)
+        agent_factory = lambda: CogCanvasAgent(enable_graph_expansion=True, chunks_mode=True,
+                                               chunks_chunk_size=512, chunks_overlap=100)
+    elif args.agent == "cogcanvas-chunks-nograph":
+        from experiments.agents.cogcanvas_agent import CogCanvasAgent
+        agent = CogCanvasAgent(enable_graph_expansion=False, chunks_mode=True,
+                               chunks_chunk_size=512, chunks_overlap=100)
+        agent_factory = lambda: CogCanvasAgent(enable_graph_expansion=False, chunks_mode=True,
+                                               chunks_chunk_size=512, chunks_overlap=100)
     elif args.agent == "rag":
         from experiments.agents.rag_agent import RagAgent
         agent = RagAgent(retain_recent=args.retain_recent)
