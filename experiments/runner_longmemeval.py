@@ -73,6 +73,13 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         # W4 union storage: chunks+artifacts canvas must not share either cache
         "union_mode": config.get("union_mode", False),
     }
+    # R2 decontamination: clean-prompt runs must NOT share cache with default
+    # prompts. Key only added when a non-default variant is active so all
+    # existing cache hashes stay valid.
+    import os
+    _variant = os.getenv("EXTRACTION_PROMPT_VARIANT", "").lower()
+    if _variant and _variant != "default":
+        extraction_config["extraction_prompt_variant"] = _variant
     config_str = json.dumps(extraction_config, sort_keys=True)
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
 
@@ -654,6 +661,16 @@ class LongMemEvalExperimentRunner:
 
         if num_samples:
             conversations = conversations[:num_samples]
+
+        # Optional slice for multi-process sharding (e.g. LME_CONV_SLICE=100:200).
+        # Applied after num_samples so shards partition the same question set.
+        import os
+        _slice = os.getenv("LME_CONV_SLICE")
+        if _slice:
+            _s, _e = (int(x) for x in _slice.split(":"))
+            conversations = conversations[_s:_e]
+            if verbose >= 1:
+                print(f"LME_CONV_SLICE={_slice}: {len(conversations)} conversations")
 
         # Compute config hash for cache identification
         agent_config = {}
@@ -1528,6 +1545,7 @@ def main():
             "cogcanvas-no-gleaning",
             "cogcanvas-chunks",          # P1-7: chunks-as-artifacts ablation (graph ON)
             "cogcanvas-chunks-nograph",  # P1-7: chunks + graph OFF
+            "cogcanvas-union",           # W4: verbatim chunks AND artifacts in one store
             "cogcanvas-minimal",
             # Multi-round retrieval variants
             "cogcanvas-multiround",
@@ -1669,6 +1687,18 @@ def main():
         default=None,
         help="Override sliding-window overlap in chars (chunks variant).",
     )
+    parser.add_argument(
+        "--retrieval-top-k",
+        type=int,
+        default=None,
+        help="Override final retrieval top-k (cogcanvas variants, budget-matched control).",
+    )
+    parser.add_argument(
+        "--inject-max-tokens",
+        type=int,
+        default=None,
+        help="Override evidence token budget for context injection (cogcanvas variants).",
+    )
 
     args = parser.parse_args()
 
@@ -1726,6 +1756,12 @@ def main():
             config["chunks_chunk_size"] = 512
             config["chunks_overlap"] = 100
             config["enable_graph_expansion"] = False
+
+        # W4 union storage: verbatim chunks AND extracted artifacts in one store
+        elif args.agent == "cogcanvas-union":
+            config["union_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
 
         # P1-7 CLI overrides for chunks variants
         if config.get("chunks_mode"):
@@ -1999,6 +2035,13 @@ def main():
         # Apply --vage-verbose if specified
         if args.vage_verbose:
             config["vage_verbose"] = True
+
+        # Retrieval/budget overrides (budget-matched control, W3 parity with
+        # runner_locomo): query-time knobs only, extraction cache unaffected
+        if args.retrieval_top_k is not None:
+            config["retrieval_top_k"] = args.retrieval_top_k
+        if args.inject_max_tokens is not None:
+            config["inject_max_tokens"] = args.inject_max_tokens
 
         agent_factory = lambda: CogCanvasAgent(**config)
         agent = agent_factory()

@@ -73,6 +73,13 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         # W4 union storage: chunks+artifacts canvas must not share either cache
         "union_mode": config.get("union_mode", False),
     }
+    # R2 decontamination: clean-prompt runs must NOT share cache with default
+    # prompts. Key only added when a non-default variant is active so all
+    # existing cache hashes stay valid.
+    import os
+    _variant = os.getenv("EXTRACTION_PROMPT_VARIANT", "").lower()
+    if _variant and _variant != "default":
+        extraction_config["extraction_prompt_variant"] = _variant
     config_str = json.dumps(extraction_config, sort_keys=True)
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
 
@@ -1122,10 +1129,15 @@ class LoCoMoExperimentRunner:
         elif is_rolling:
             # === ROLLING COMPRESSION STRATEGY ===
             current_buffer = []
-            use_batch = self.extraction_mode == "batch" and hasattr(agent, 'batch_extract')
+            use_batch = self.extraction_mode in ("batch", "session") and hasattr(agent, 'batch_extract')
 
             if verbose >= 2:
-                mode_str = "Batch Extraction" if use_batch else "Per-Turn Extraction (legacy)"
+                if self.extraction_mode == "session":
+                    mode_str = "Session-Level Batch Extraction"
+                elif use_batch:
+                    mode_str = "Batch Extraction"
+                else:
+                    mode_str = "Per-Turn Extraction (legacy)"
                 print(f"    Running Rolling Compression with {mode_str} (interval={self.rolling_interval})...")
 
             batch_buffer = []  # Accumulate turns for batch extraction
@@ -1134,8 +1146,19 @@ class LoCoMoExperimentRunner:
                 batch_buffer.append(turn)
                 current_buffer.append(turn)
 
-                # Every N turns: extract + compress
-                if (i + 1) % self.rolling_interval == 0:
+                # Extraction boundary: session change (E3 granularity ablation)
+                # or every N turns (default rolling protocol)
+                if self.extraction_mode == "session":
+                    cur_dt = getattr(turn, "session_datetime", None)
+                    next_dt = (
+                        getattr(turns_to_process[i + 1], "session_datetime", None)
+                        if i + 1 < len(turns_to_process) else None
+                    )
+                    at_boundary = (i + 1 == len(turns_to_process)) or (next_dt != cur_dt)
+                else:
+                    at_boundary = (i + 1) % self.rolling_interval == 0
+
+                if at_boundary:
                     # Step 1: Extract
                     if use_batch and hasattr(agent, 'batch_extract'):
                         # BATCH MODE: 1 LLM call for N turns (recommended, CogCanvas only)
@@ -1654,6 +1677,7 @@ def main():
             "cogcanvas-recall-boost",        # Recall-optimized config (top_k=20, hops=4)
             "cogcanvas-balanced",            # Balanced config (top_k=15, hops=4)
             "native",
+            "full-context",  # Full conversation in answerer prompt (no retrieval/compression)
             "summarization",
             "rag",
             "rag-rerank",
@@ -1746,9 +1770,10 @@ def main():
     )
     parser.add_argument(
         "--extraction-mode",
-        choices=["per_turn", "batch"],
+        choices=["per_turn", "batch", "session"],
         default="batch",
-        help="Extraction strategy: 'per_turn' (legacy, slow), 'batch' (recommended, 40-turn batches)",
+        help="Extraction strategy: 'per_turn' (legacy, slow), 'batch' (recommended, 40-turn batches), "
+             "'session' (E3 granularity ablation: one extractor call per LoCoMo session)",
     )
     parser.add_argument(
         "--no-cache",
@@ -1815,6 +1840,12 @@ def main():
         type=int,
         default=None,
         help="Override sliding-window overlap in chars (chunks variant).",
+    )
+    parser.add_argument(
+        "--retrieval-method",
+        choices=["semantic", "bm25", "hybrid"],
+        default=None,
+        help="Override retrieval method (cogcanvas variants), e.g. 'semantic' for dense-only ablation.",
     )
     parser.add_argument(
         "--retrieval-top-k",
@@ -2212,6 +2243,8 @@ def main():
             config["vage_verbose"] = True
 
         # Retrieval/budget overrides (budget-matched experiments, W3)
+        if args.retrieval_method is not None:
+            config["retrieval_method"] = args.retrieval_method
         if args.retrieval_top_k is not None:
             config["retrieval_top_k"] = args.retrieval_top_k
         if args.reranker_candidate_k is not None:
@@ -2239,6 +2272,11 @@ def main():
 
         agent = NativeAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: NativeAgent(retain_recent=args.retain_recent)
+    elif args.agent == "full-context":
+        from experiments.agents.full_context_agent import FullContextAgent
+
+        agent = FullContextAgent()
+        agent_factory = lambda: FullContextAgent()
     elif args.agent == "summarization":
         from experiments.agents.summarization_agent import SummarizationAgent
 

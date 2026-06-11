@@ -120,6 +120,147 @@ GLEANING_PROMPT = """You are reviewing an extraction result for missed informati
 Now find any missed objects:"""
 
 
+# =============================================================================
+# Decontaminated prompt variants (R2 review fix)
+#
+# The default EXTRACTION_PROMPT / GLEANING_PROMPT few-shot examples contain
+# LoCoMo test-set content (Caroline/Melanie/LGBTQ support group/7 May 2023).
+# These "clean" variants replace them with fictional workplace/travel personas
+# while keeping structure, artifact-type coverage, and date formats identical.
+#
+# Selection: set EXTRACTION_PROMPT_VARIANT=clean in the environment.
+# Default remains the original prompts so published numbers stay reproducible.
+# =============================================================================
+
+EXTRACTION_PROMPT_CLEAN = """You are an expert at extracting structured cognitive objects from dialogue using systematic reasoning.
+
+Given a conversation turn (user message + assistant response), extract any of these object types:
+
+**Task-oriented types:**
+1. **decision**: A choice or decision made (e.g., "Let's use PostgreSQL", "I decided to pursue an MBA")
+2. **todo**: Action items, tasks to do (e.g., "Need to implement auth", "Planning to go hiking next month")
+3. **key_fact**: Important facts, numbers, constraints (e.g., "Budget is $50k", "The event is in June 2021")
+4. **reminder**: Preferences, rules to remember (e.g., "User prefers TypeScript", "Always review notes before meetings")
+5. **insight**: Conclusions, learnings (e.g., "The bottleneck is in the database", "Morning walks improve my focus")
+
+**Personal/Social types (IMPORTANT for conversations about people):**
+6. **person_attribute**: Personal traits, identity, status (e.g., "Priya is a software engineer", "Daniel is married with two kids", "John is single", "She moved from Brazil 4 years ago")
+7. **event**: Activities or occurrences WITH time (e.g., "Attended a photography workshop on 7 March 2021", "Finished a marathon last Sunday", "Visiting a museum in 2020")
+8. **relationship**: Interpersonal connections (e.g., "Priya and Daniel are close friends", "Known each other for 4 years")
+
+**CHAIN-OF-THOUGHT EXTRACTION PROTOCOL:**
+Before extracting, think step-by-step:
+1. **WHO**: Identify all people, entities, or subjects mentioned
+2. **WHEN**: Identify all temporal expressions (dates, times, sequences like "before", "after")
+3. **WHAT**: Identify facts, decisions, events, relationships
+4. **WHY**: Identify causal relationships (constraints that led to decisions)
+5. **CONNECTIONS**: Link related information (e.g., "Budget constraint" → "Choice decision")
+
+**EXTRACTION RULES:**
+- Extract ALL factual information about people (identity, status, activities, preferences)
+- Extract ALL events with their time expressions - TEMPORAL REASONING IS CRITICAL
+- Extract ALL relationships mentioned
+- Each object should be self-contained and understandable without context
+- **CRITICAL**: Include "citation" field with EXACT quote from dialogue
+- Do NOT skip personal information - it is important!
+- Pay special attention to TEMPORAL SEQUENCES (before/after, yesterday/today, dates)
+
+**GEOGRAPHIC ENTITY RULES (CRITICAL FOR RETRIEVAL):**
+- For cities: ALWAYS include both country AND city (e.g., "France (Paris)", "Canada (Toronto)")
+- For locations: Use format "Country (City)" even if only city is mentioned
+- Examples:
+  * "visited Paris" → extract as "visited France (Paris)"
+  * "went to Nuuk" → extract as "went to Greenland (Nuuk)"
+  * "lives in Toronto" → extract as "lives in Canada (Toronto)"
+- This explicit format helps with later retrieval of country/city information
+
+**CRITICAL TEMPORAL RULES:**
+- Preserve dates EXACTLY as written: "7 March 2021", "June 2021", "the sunday before 25 March 2021"
+- DO NOT convert specific dates to relative expressions
+- Include dates in both "content" and "time_expression" fields
+
+Output JSON array:
+[
+  {
+    "type": "decision|todo|key_fact|reminder|insight|person_attribute|event|relationship",
+    "content": "The extracted information INCLUDING exact dates if mentioned",
+    "citation": "EXACT verbatim quote from dialogue",
+    "context": "Brief explanation of why extracted",
+    "confidence": 0.0-1.0,
+    "time_expression": "VERBATIM time expression or empty string"
+  }
+]
+
+**Example 1 (Social conversation):**
+User: "Priya is a software engineer who moved from Brazil 4 years ago. She went to the photography workshop on 7 March 2021."
+Assistant: "That's wonderful that she found a creative community!"
+
+Output:
+[
+  {"type": "person_attribute", "content": "Priya is a software engineer", "citation": "Priya is a software engineer", "context": "Identity information", "confidence": 0.95, "time_expression": ""},
+  {"type": "person_attribute", "content": "Priya moved from Brazil 4 years ago", "citation": "moved from Brazil 4 years ago", "context": "Background information", "confidence": 0.9, "time_expression": "4 years ago"},
+  {"type": "event", "content": "Priya attended photography workshop on 7 March 2021", "citation": "went to the photography workshop on 7 March 2021", "context": "Activity with specific date", "confidence": 0.95, "time_expression": "7 March 2021"}
+]
+
+**Example 2 (Mixed conversation):**
+User: "Daniel is married with two kids. He's planning to go hiking in June 2021. We've been friends for 4 years."
+Assistant: "Sounds like a fun family trip!"
+
+Output:
+[
+  {"type": "person_attribute", "content": "Daniel is married with two kids", "citation": "Daniel is married with two kids", "context": "Family status", "confidence": 0.95, "time_expression": ""},
+  {"type": "event", "content": "Daniel planning hiking trip in June 2021", "citation": "planning to go hiking in June 2021", "context": "Future activity with date", "confidence": 0.9, "time_expression": "June 2021"},
+  {"type": "relationship", "content": "User and Daniel have been friends for 4 years", "citation": "We've been friends for 4 years", "context": "Friendship duration", "confidence": 0.9, "time_expression": "4 years"}
+]"""
+
+GLEANING_PROMPT_CLEAN = """You are reviewing an extraction result for missed information.
+
+**Previous extraction found these objects:**
+{previous_objects}
+
+**Original dialogue:**
+{dialogue}
+
+**Your task**: Find ANY information that was MISSED in the first extraction. Focus on:
+1. Pronoun references ("She", "He" → Who specifically?)
+2. Omitted subjects (Who is doing the action?)
+3. Implicit causality ("因为", "导致" → What causes what?)
+4. Time expressions (dates, "之后", "before")
+5. Relationships (Who knows whom?)
+6. Location details (Where?)
+
+**CRITICAL FORMAT RULES**:
+- Output a JSON array
+- Each object MUST have these fields: type, content, citation, context, confidence, time_expression
+- If nothing was missed, output EXACTLY: []
+
+**Example output (if found missed info)**:
+[{{"type": "person_attribute", "content": "Priya moved from Brazil 4 years ago", "citation": "moved from Brazil 4 years ago", "context": "Background missed", "confidence": 0.9, "time_expression": "4 years ago"}}]
+
+**Example output (if nothing missed)**:
+[]
+
+Now find any missed objects:"""
+
+
+def get_extraction_prompt() -> str:
+    """Return the extraction prompt for the active variant.
+
+    EXTRACTION_PROMPT_VARIANT=clean selects the decontaminated few-shot
+    examples; anything else (or unset) returns the original prompt.
+    """
+    if os.getenv("EXTRACTION_PROMPT_VARIANT", "").lower() == "clean":
+        return EXTRACTION_PROMPT_CLEAN
+    return EXTRACTION_PROMPT
+
+
+def get_gleaning_prompt() -> str:
+    """Return the gleaning prompt for the active variant (see above)."""
+    if os.getenv("EXTRACTION_PROMPT_VARIANT", "").lower() == "clean":
+        return GLEANING_PROMPT_CLEAN
+    return GLEANING_PROMPT
+
+
 class OpenAIBackend(LLMBackend):
     """OpenAI-compatible LLM backend for extraction and embeddings."""
 
@@ -203,7 +344,7 @@ class OpenAIBackend(LLMBackend):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": EXTRACTION_PROMPT + context_hint},
+                    {"role": "system", "content": get_extraction_prompt() + context_hint},
                     {"role": "user", "content": dialogue},
                 ],
                 temperature=0.1,  # Low temperature for consistent extraction
@@ -283,7 +424,7 @@ class OpenAIBackend(LLMBackend):
         )
 
         # Build gleaning prompt
-        gleaning_prompt = GLEANING_PROMPT.format(
+        gleaning_prompt = get_gleaning_prompt().format(
             previous_objects=previous_objects_str,
             dialogue=dialogue
         )

@@ -111,6 +111,7 @@ def evaluate_single_question(
     ground_truth: str,
     category: int,
     top_k: int = 10,
+    apply_rerank: bool = False,
 ) -> RetrievalRecallResult:
     """评估单个问题的检索召回率"""
 
@@ -118,13 +119,20 @@ def evaluate_single_question(
     canvas = agent._canvas
 
     # 使用 agent 的配置
+    # apply_rerank=True 时复刻 QA pipeline 的两段式检索：
+    # 先取 reranker_candidate_k 个候选，再用 BGE reranker 截到 top_k
+    candidate_k = agent.reranker_candidate_k if apply_rerank else top_k
     retrieval_result = canvas.retrieve(
         query=question,
-        top_k=top_k,
+        top_k=candidate_k,
         method=agent.retrieval_method,
         include_related=agent.enable_graph_expansion,
         max_hops=agent.graph_hops,
     )
+    if apply_rerank and agent._reranker and retrieval_result.objects:
+        retrieval_result = agent._apply_reranking(retrieval_result, question)
+        retrieval_result.objects = retrieval_result.objects[:top_k]
+        retrieval_result.scores = retrieval_result.scores[:top_k]
 
     # 2. 组合检索内容
     retrieved_parts = []
@@ -165,6 +173,7 @@ def evaluate_conversation(
     top_k: int = 10,
     categories: List[int] = [1, 2, 3],
     verbose: int = 0,
+    apply_rerank: bool = False,
 ) -> ConversationRetrievalResult:
     """评估单个对话的所有问题"""
 
@@ -180,6 +189,7 @@ def evaluate_conversation(
             ground_truth=qa.answer,
             category=qa.category,
             top_k=top_k,
+            apply_rerank=apply_rerank,
         )
         qa_results.append(result)
 
@@ -214,6 +224,8 @@ def run_experiment(
     categories: List[int] = [1, 2, 3],
     verbose: int = 0,
     load_cache: bool = True,
+    apply_rerank: bool = False,
+    output: Optional[str] = None,
 ):
     """运行检索召回率实验"""
 
@@ -237,6 +249,7 @@ def run_experiment(
     config = {
         "enable_graph_expansion": True,
         "enable_temporal_heuristic": True,
+        "enable_gleaning": True,  # 对齐 runner_locomo 主表配置（影响 cache hash）
         "retrieval_method": "hybrid",
         "prompt_style": "cot",
         "retrieval_top_k": top_k,
@@ -266,8 +279,33 @@ def run_experiment(
             "graph_hops": 1,
             "use_reranker": False,
         }
+    # P1-7 chunks store: verbatim 512-char sliding-window chunks instead of
+    # LLM-extracted artifacts (naming aligned with runner_locomo variants)
+    elif agent_name == "cogcanvas-chunks":
+        config["chunks_mode"] = True
+        config["chunks_chunk_size"] = 512
+        config["chunks_overlap"] = 100
+    elif agent_name == "cogcanvas-chunks-nograph":
+        config["chunks_mode"] = True
+        config["chunks_chunk_size"] = 512
+        config["chunks_overlap"] = 100
+        config["enable_graph_expansion"] = False
 
     agent = CogCanvasAgent(**config)
+
+    # 与 runner_locomo.run() 一致的 cache 身份：从 agent 实际属性取值
+    # （extractor/embedding model 来自 .env，chunks/union 模式必须参与 hash）
+    hash_config = {
+        "extractor_model": agent.extractor_model,
+        "embedding_model": agent.embedding_model,
+        "enable_temporal_heuristic": agent.enable_temporal_heuristic,
+        "enable_gleaning": agent.enable_gleaning,
+        "chunks_mode": agent.chunks_mode,
+        "chunks_chunk_size": agent.chunks_chunk_size,
+        "chunks_overlap": agent.chunks_overlap,
+        "union_mode": agent.union_mode,
+        "rolling_interval": 40,  # 主表协议 rolling compression every 40 turns
+    }
 
     # 评估每个对话
     all_results = []
@@ -281,13 +319,20 @@ def run_experiment(
         agent.reset()
 
         # 尝试加载缓存
-        config_hash = get_extraction_config_hash(config)
+        config_hash = get_extraction_config_hash(hash_config)
         cache_path = get_cache_path(conv.id, config_hash)
 
         if load_cache and cache_path.exists():
             agent.load_canvas_state(str(cache_path))
             if verbose >= 1:
-                print(f"  Loaded from cache")
+                print(f"  Loaded from cache ({config_hash})")
+        elif agent.chunks_mode:
+            # Chunks 模式: process_turn 只缓冲不入库，需按主表协议
+            # 以 40-turn batch 调 batch_extract 完成 chunk 入库
+            for start in range(0, len(conv.turns), 40):
+                agent.batch_extract(conv.turns[start:start + 40])
+            if verbose >= 1:
+                print(f"  Ingested {len(conv.turns)} turns as chunks (40-turn batches)")
         else:
             # 需要先处理对话以构建 Canvas
             for turn in conv.turns:
@@ -302,6 +347,7 @@ def run_experiment(
             top_k=top_k,
             categories=categories,
             verbose=verbose,
+            apply_rerank=apply_rerank,
         )
         all_results.append(conv_result)
 
@@ -351,13 +397,19 @@ def run_experiment(
         print()
 
     # 保存结果
-    output_dir = Path("experiments/results")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"retrieval_recall_{agent_name}.json"
+    if output:
+        output_file = Path(output)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = Path("experiments/results")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        suffix = "_rerank" if apply_rerank else ""
+        output_file = output_dir / f"retrieval_recall_{agent_name}{suffix}.json"
 
     summary = {
         "agent": agent_name,
         "config": config,
+        "apply_rerank": apply_rerank,
         "num_conversations": len(conversations),
         "top_k": top_k,
         "overall": {
@@ -398,6 +450,8 @@ def main():
             "cogcanvas-no-hybrid",
             "cogcanvas-no-rerank",
             "cogcanvas-minimal",
+            "cogcanvas-chunks",
+            "cogcanvas-chunks-nograph",
         ],
         default="cogcanvas",
         help="Agent to evaluate",
@@ -407,6 +461,11 @@ def main():
     parser.add_argument("--categories", "-c", type=int, nargs="+", default=[1, 2, 3], help="Question categories")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level")
     parser.add_argument("--no-cache", action="store_true", help="Don't load from cache")
+    parser.add_argument(
+        "--apply-rerank", action="store_true",
+        help="复刻 QA pipeline 两段式检索: 取 reranker_candidate_k 候选后 BGE rerank 到 top-k",
+    )
+    parser.add_argument("--output", "-o", default=None, help="Output JSON path (default: results/retrieval_recall_<agent>[_rerank].json)")
 
     args = parser.parse_args()
 
@@ -417,6 +476,8 @@ def main():
         categories=args.categories,
         verbose=args.verbose,
         load_cache=not args.no_cache,
+        apply_rerank=args.apply_rerank,
+        output=args.output,
     )
 
 
