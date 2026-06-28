@@ -1,45 +1,186 @@
 {
-  "LoCoMo (Cat1-3, 699Q)": {
-    "paper": {
-      "chunks": 43.9,
-      "artifacts": 28.0
-    },
-    "judges": {
-      "gpt-4o-mini": {
-        "chunks": 44.3,
-        "chunks_n": 699,
-        "artifacts": 28.2,
-        "artifacts_n": 699,
-        "gap": 16.1
+  "judges": [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "qwen-plus",
+    "qwen-max",
+    "gemini-2.5-flash-lite",
+    "claude-haiku-4-5-20251001",
+    "deepseek-v3.2"
+  ],
+  "benchmarks": {
+    "LoCoMo (Cat1-3)": {
+      "n": 699,
+      "paper": {
+        "chunks": 43.9,
+        "artifacts": 28.0,
+        "gap": 15.9
       },
-      "qwen-plus": {
-        "chunks": 40.1,
-        "chunks_n": 699,
-        "artifacts": 26.6,
-        "artifacts_n": 699,
-        "gap": 13.5
+      "judges": {
+        "gpt-4o-mini": {
+          "family": "OpenAI",
+          "chunks": 44.2,
+          "artifacts": 27.9,
+          "gap": 16.3,
+          "mcnemar_b": 158,
+          "mcnemar_c": 44,
+          "p": 2.7848297824962656e-16,
+          "log10p": -15.6,
+          "n": 699
+        },
+        "gpt-4o": {
+          "family": "OpenAI",
+          "chunks": 44.6,
+          "artifacts": 27.6,
+          "gap": 17.0,
+          "mcnemar_b": 161,
+          "mcnemar_c": 42,
+          "p": 1.2755932480044158e-17,
+          "log10p": -16.9,
+          "n": 699
+        },
+        "qwen-plus": {
+          "family": "Alibaba",
+          "chunks": 39.9,
+          "artifacts": 26.9,
+          "gap": 13.0,
+          "mcnemar_b": 145,
+          "mcnemar_c": 54,
+          "p": 8.31600265487097e-11,
+          "log10p": -10.1,
+          "n": 699
+        },
+        "qwen-max": {
+          "family": "Alibaba",
+          "chunks": 42.1,
+          "artifacts": 27.5,
+          "gap": 14.6,
+          "mcnemar_b": 148,
+          "mcnemar_c": 46,
+          "p": 1.0829593965567383e-13,
+          "log10p": -13.0,
+          "n": 699
+        },
+        "gemini-2.5-flash-lite": {
+          "family": "Google",
+          "chunks": 42.3,
+          "artifacts": 28.6,
+          "gap": 13.7,
+          "mcnemar_b": 145,
+          "mcnemar_c": 49,
+          "p": 3.2339078960314684e-12,
+          "log10p": -11.5,
+          "n": 699
+        },
+        "claude-haiku-4-5-20251001": {
+          "family": "Anthropic",
+          "chunks": 41.6,
+          "artifacts": 28.2,
+          "gap": 13.4,
+          "mcnemar_b": 142,
+          "mcnemar_c": 48,
+          "p": 5.5130279271809574e-12,
+          "log10p": -11.3,
+          "n": 699
+        },
+        "deepseek-v3.2": {
+          "family": "DeepSeek",
+          "chunks": 41.5,
+          "artifacts": 27.0,
+          "gap": 14.4,
+          "mcnemar_b": 142,
+          "mcnemar_c": 41,
+          "p": 3.057056605939517e-14,
+          "log10p": -13.5,
+          "n": 699
+        }
       }
-    }
-  },
-  "LongMemEval-S (500Q)": {
-    "paper": {
-      "chunks": 67.4,
-      "artifacts": 45.4
     },
-    "judges": {
-      "gpt-4o-mini": {
-        "chunks": 67.8,
-        "chunks_n": 500,
-        "artifacts": 46.0,
-        "artifacts_n": 500,
-        "gap": 21.8
-      },
-      "qwen-plus": {
-        "chunks": 66.2,
-        "chunks_n": 500,
-        "artifacts": 44.2,
-        "artifacts_n": 500,
+    "LongMemEval-S": {
+      "n": 500,
+      "paper": {
+        "chunks": 67.4,
+        "artifacts": 45.4,
         "gap": 22.0
+      },
+      "judges": {
+        "gpt-4o-mini": {
+          "family": "OpenAI",
+          "chunks": 68.0,
+          "artifacts": 46.0,
+          "gap": 22.0,
+          "mcnemar_b": 151,
+          "mcnemar_c": 41,
+          "p": 5.345131574955532e-16,
+          "log10p": -15.3,
+          "n": 500
+        },
+        "gpt-4o": {
+          "family": "OpenAI",
+          "chunks": 67.2,
+          "artifacts": 46.0,
+          "gap": 21.2,
+          "mcnemar_b": 149,
+          "mcnemar_c": 43,
+          "p": 6.858813482497109e-15,
+          "log10p": -14.2,
+          "n": 500
+        },
+        "qwen-plus": {
+          "family": "Alibaba",
+          "chunks": 66.0,
+          "artifacts": 43.8,
+          "gap": 22.2,
+          "mcnemar_b": 150,
+          "mcnemar_c": 39,
+          "p": 1.4967441440825354e-16,
+          "log10p": -15.8,
+          "n": 500
+        },
+        "qwen-max": {
+          "family": "Alibaba",
+          "chunks": 66.0,
+          "artifacts": 42.2,
+          "gap": 23.8,
+          "mcnemar_b": 155,
+          "mcnemar_c": 36,
+          "p": 8.572087075330524e-19,
+          "log10p": -18.1,
+          "n": 500
+        },
+        "gemini-2.5-flash-lite": {
+          "family": "Google",
+          "chunks": 67.8,
+          "artifacts": 48.4,
+          "gap": 19.4,
+          "mcnemar_b": 141,
+          "mcnemar_c": 44,
+          "p": 4.800674712135088e-13,
+          "log10p": -12.3,
+          "n": 500
+        },
+        "claude-haiku-4-5-20251001": {
+          "family": "Anthropic",
+          "chunks": 64.8,
+          "artifacts": 43.6,
+          "gap": 21.2,
+          "mcnemar_b": 150,
+          "mcnemar_c": 44,
+          "p": 9.791212508602654e-15,
+          "log10p": -14.0,
+          "n": 500
+        },
+        "deepseek-v3.2": {
+          "family": "DeepSeek",
+          "chunks": 65.8,
+          "artifacts": 44.4,
+          "gap": 21.4,
+          "mcnemar_b": 152,
+          "mcnemar_c": 45,
+          "p": 8.956372819027885e-15,
+          "log10p": -14.0,
+          "n": 500
+        }
       }
     }
   }
