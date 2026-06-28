@@ -1,0 +1,46 @@
+{
+  "LoCoMo (Cat1-3, 699Q)": {
+    "paper": {
+      "chunks": 43.9,
+      "artifacts": 28.0
+    },
+    "judges": {
+      "gpt-4o-mini": {
+        "chunks": 44.3,
+        "chunks_n": 699,
+        "artifacts": 28.2,
+        "artifacts_n": 699,
+        "gap": 16.1
+      },
+      "qwen-plus": {
+        "chunks": 40.1,
+        "chunks_n": 699,
+        "artifacts": 26.6,
+        "artifacts_n": 699,
+        "gap": 13.5
+      }
+    }
+  },
+  "LongMemEval-S (500Q)": {
+    "paper": {
+      "chunks": 67.4,
+      "artifacts": 45.4
+    },
+    "judges": {
+      "gpt-4o-mini": {
+        "chunks": 67.8,
+        "chunks_n": 500,
+        "artifacts": 46.0,
+        "artifacts_n": 500,
+        "gap": 21.8
+      },
+      "qwen-plus": {
+        "chunks": 66.2,
+        "chunks_n": 500,
+        "artifacts": 44.2,
+        "artifacts_n": 500,
+        "gap": 22.0
+      }
+    }
+  }
+}
