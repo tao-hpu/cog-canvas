@@ -126,16 +126,31 @@ def build_mem0(conv, faiss_dir):
             "openai_base_url": API_BASE, "api_key": API_KEY}},
         "vector_store": {"provider": "faiss", "config": {
             "collection_name": "anchor", "path": faiss_dir,
-            "embedding_model_dims": EMBED_DIM}},
+            "embedding_model_dims": EMBED_DIM,
+            # Mem0's faiss default ("euclidean") returns a raw L2 *distance* as
+            # the score, but Mem0's high-level scorer ranks DESCENDING and gates
+            # on score>threshold -- i.e. it treats the field as a *similarity*.
+            # With euclidean the ranking is therefore inverted and the values
+            # saturate the score_and_rank min(.,1.0) cap (all scores -> 1.0,
+            # relevant memories pushed to the bottom). "cosine" -> IndexFlatIP
+            # returns an inner product; text-embedding-3-small is unit-norm
+            # (verified |v|=1.000), so IP == cosine in [0,1], higher==closer --
+            # the direction Mem0's scorer expects. This is the correct, standard
+            # similarity setup for Mem0 + OpenAI embeddings.
+            "distance_strategy": "cosine"}},
     }
     mem = Memory.from_config(cfg)
     uid = f"loco_{conv.id}"
     # Add per-session batches (Mem0 infers facts over each batch) to mirror
-    # Mem0's own LoCoMo ingestion while bounding extraction calls.
+    # Mem0's own LoCoMo ingestion while bounding extraction calls. Each batch
+    # carries its session timestamp as metadata -- this is Mem0's documented
+    # LoCoMo protocol (per-message timestamps fed at write time, surfaced at
+    # read time), and it keeps the temporal information parity with the chunk
+    # store, whose text carries explicit [Session: <date>] markers.
     batch, cur = [], None
     for t in conv.turns:
         if t.session_datetime != cur and batch:
-            mem.add(batch, user_id=uid, infer=True)
+            mem.add(batch, user_id=uid, infer=True, metadata={"timestamp": cur})
             batch = []
         cur = t.session_datetime
         if t.user:
@@ -143,32 +158,60 @@ def build_mem0(conv, faiss_dir):
         if t.assistant:
             batch.append({"role": "assistant", "content": f"{conv.speaker_b}: {t.assistant}"})
     if batch:
-        mem.add(batch, user_id=uid, infer=True)
+        mem.add(batch, user_id=uid, infer=True, metadata={"timestamp": cur})
     return mem, uid
 
 
 def mem0_context(mem, uid, question, top_k=30):
     res = mem.search(question, filters={"user_id": uid}, top_k=top_k)
     items = res["results"] if isinstance(res, dict) else res
-    mems = [it.get("memory", "") for it in items]
-    return "\n".join(f"- {m}" for m in mems if m)
+    lines = []
+    for it in items:
+        m = it.get("memory", "")
+        if not m:
+            continue
+        ts = (it.get("metadata") or {}).get("timestamp")
+        lines.append(f"- [{ts}] {m}" if ts else f"- {m}")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
 # Verbatim chunk store (same embedder, faiss)
 # --------------------------------------------------------------------------- #
-def build_chunks(conv):
-    chunks = chunk_text(full_context_text(conv))
+def build_chunks(conv, size=512, overlap=100):
+    """Per-session verbatim chunks, each tagged with its session timestamp so
+    the chunk store carries the SAME per-item temporal information the Mem0
+    store gets via metadata={"timestamp": ...}. This mirrors the paper backbone,
+    which hands session timestamps to the answerer for every retrieved item;
+    embedding is on the raw chunk text, the timestamp is added at render time."""
+    raw, stamps = [], []
+    cur, buf = None, []
+
+    def flush():
+        if not buf:
+            return
+        for c in chunk_text("\n".join(buf), size, overlap):
+            raw.append(c); stamps.append(cur)
+
+    for t in conv.turns:
+        if t.session_datetime != cur and buf:
+            flush(); buf = []
+        cur = t.session_datetime
+        if t.user: buf.append(f"{conv.speaker_a}: {t.user}")
+        if t.assistant: buf.append(f"{conv.speaker_b}: {t.assistant}")
+    flush()
+
     client = oai()
     embs = []
-    for i in range(0, len(chunks), 64):
-        r = client.embeddings.create(model=EMBED_MODEL, input=chunks[i:i + 64])
+    for i in range(0, len(raw), 64):
+        r = client.embeddings.create(model=EMBED_MODEL, input=raw[i:i + 64])
         embs.extend([d.embedding for d in r.data])
     mat = np.array(embs, dtype="float32")
     faiss.normalize_L2(mat)
     index = faiss.IndexFlatIP(EMBED_DIM)
     index.add(mat)
-    return chunks, index
+    rendered = [f"[{stamps[i]}] {raw[i]}" for i in range(len(raw))]
+    return rendered, index
 
 
 def chunk_context(chunks, index, question, top_k=15):
