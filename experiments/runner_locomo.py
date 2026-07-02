@@ -72,6 +72,10 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
         "chunks_overlap": config.get("chunks_overlap", 100),
         # W4 union storage: chunks+artifacts canvas must not share either cache
         "union_mode": config.get("union_mode", False),
+        # P1-8 items-builder anchors (SeCom/Mem0/A-Mem) each get a distinct
+        # canvas; only added when present so all existing hashes stay valid.
+        **({"items_builder": config["items_builder"]}
+           if config.get("items_builder") else {}),
     }
     # R2 decontamination: clean-prompt runs must NOT share cache with default
     # prompts. Key only added when a non-default variant is active so all
@@ -732,7 +736,11 @@ class LoCoMoExperimentRunner:
             return score_locomo_answer(answer, ground_truth)
 
     def _load_dataset(self, path: str) -> List[LoCoMoConversation]:
-        """Load and convert LoCoMo dataset."""
+        """Load and convert LoCoMo dataset (or PerLTQA, the M2 cross-lingual probe)."""
+        if "perltqa" in path.lower():
+            from experiments.perltqa_adapter import load_perltqa
+            print(f"Loading PerLTQA dataset from {path}...")
+            return load_perltqa(path)
         print(f"Loading LoCoMo dataset from {path}...")
         raw_data = load_locomo(path)
         conversations = convert_to_eval_format(raw_data)
@@ -785,6 +793,13 @@ class LoCoMoExperimentRunner:
             agent_config['chunks_overlap'] = agent.chunks_overlap
         if hasattr(agent, 'union_mode'):
             agent_config['union_mode'] = agent.union_mode
+        # P1-8: an items-builder canvas (SeCom/Mem0/A-Mem) is incompatible with
+        # artifacts/chunks/union — its label must be part of the cache identity
+        # or it would silently load an artifact store sharing every other key.
+        if getattr(agent, 'items_builder', None) is not None:
+            agent_config['items_builder'] = getattr(
+                agent.items_builder, 'anchor_label', 'items'
+            )
         agent_config['rolling_interval'] = self.rolling_interval
 
         # Generate config_hash if either load or save cache is enabled
@@ -1666,6 +1681,8 @@ def main():
             "cogcanvas-no-gleaning",  # Full - Gleaning (second-pass extraction)
             "cogcanvas-chunks",       # P1-7: chunks-as-artifacts ablation (graph ON)
             "cogcanvas-chunks-nograph",  # P1-7 control C: chunks + graph OFF
+            "cogcanvas-chunks-abstgate",  # chunks + score-threshold abstention gate
+            "cogcanvas-chunks-refuser",  # Tier-2: chunks + LLM refuser (ABSTAIN_MODE)
             "cogcanvas-union",  # W4: verbatim chunks AND extracted artifacts in one store
             "cogcanvas-minimal",      # Minimal baseline
             # Multi-round retrieval variants
@@ -1681,7 +1698,22 @@ def main():
             "summarization",
             "rag",
             "rag-rerank",
+            "secom",            # Fidelity anchor: topical segmentation + LLMLingua-2
+            "secom-nocompress",  # SeCom ablation: segmentation only
+            "mem0",             # Fidelity anchor: incremental facts + update loop
+            "amem",             # Fidelity anchor: structured notes + linking + evolution
+            "artifacts-flat",   # Fidelity anchor (lossy endpoint): typed artifacts, flat pipeline
+            # P1-8 plan-B: representation builders routed through the REAL backbone
+            # (nograph cell that scores chunks 43.9 / artifacts 28.0), swapping
+            # only the stored items. Verbatim anchor = cogcanvas-chunks-nograph.
+            "cogcanvas-secom-nograph",   # SeCom segments via backbone
+            "cogcanvas-mem0-nograph",    # Mem0 facts via backbone
+            "cogcanvas-amem-nograph",    # A-Mem notes via backbone
+            "cogcanvas-dial-nograph",    # controlled fidelity dial (DIAL_RETAIN)
+            "cogcanvas-sent-nograph",    # sentence-verbatim store (granularity control)
+            "cogcanvas-emem-nograph",    # EMem-style near-verbatim EDU store (P1-a spectrum anchor)
             "memgpt-lite",
+            "memgpt-lite-artifacts",  # stateful-agent ablation: archival = extracted artifacts
             "graphrag-lite",
             "graphrag",
         ],
@@ -1872,7 +1904,70 @@ def main():
     agent_factory = None
     agent = None
 
-    if args.agent.startswith("cogcanvas"):
+    # P1-8 plan-B: representation builders routed through the REAL backbone.
+    # Must be tested BEFORE the generic startswith("cogcanvas") branch, which
+    # would otherwise capture these names and run the default artifact config.
+    # The backbone here is the nograph cell that scores chunks 43.9 / artifacts
+    # 28.0; only the stored items differ (SeCom segments / Mem0 facts / A-Mem
+    # notes), so the verbatim anchor is cogcanvas-chunks-nograph by construction.
+    if args.agent in (
+        "cogcanvas-secom-nograph",
+        "cogcanvas-mem0-nograph",
+        "cogcanvas-amem-nograph",
+        "cogcanvas-dial-nograph",
+        "cogcanvas-sent-nograph",
+        "cogcanvas-emem-nograph",
+    ):
+        from experiments.agents.cogcanvas_agent import CogCanvasAgent
+
+        # NOGRAPH_TOP_K / NOGRAPH_CAND_K env overrides let a fine-grained anchor
+        # (sentence-verbatim) be budget-matched to chunks: raise k so its small
+        # items fill the same answerer-token budget. Default 15/30 = unchanged.
+        _ng_topk = int(os.getenv("NOGRAPH_TOP_K", "15"))
+        _ng_candk = int(os.getenv("NOGRAPH_CAND_K", "30"))
+        _backbone = dict(
+            enable_graph_expansion=False,
+            enable_temporal_heuristic=True,
+            enable_gleaning=True,
+            retrieval_method="hybrid",
+            prompt_style="cot",
+            retrieval_top_k=_ng_topk,
+            graph_hops=3,
+            use_reranker=True,
+            reranker_candidate_k=_ng_candk,
+        )
+
+        def _make_items_builder():
+            if args.agent == "cogcanvas-secom-nograph":
+                from experiments.agents.secom_agent import SecomAgent
+                # Sweep hook: SECOM_COMPRESS_RATE varies LLMLingua-2 retention
+                # (default 0.75 = the figure run). compress_rate is part of the
+                # anchor_label -> each rate gets its own cache dir, no collision.
+                _sr = os.getenv("SECOM_COMPRESS_RATE")
+                if _sr is not None:
+                    return SecomAgent(compress=True, compress_rate=float(_sr))
+                return SecomAgent(compress=True)
+            if args.agent == "cogcanvas-mem0-nograph":
+                from experiments.agents.mem0_agent import Mem0Agent
+                return Mem0Agent()
+            if args.agent == "cogcanvas-dial-nograph":
+                from experiments.agents.fidelity_dial_agent import FidelityDialBuilder
+                return FidelityDialBuilder()  # retain from DIAL_RETAIN env
+            if args.agent == "cogcanvas-sent-nograph":
+                from experiments.agents.sentence_chunk_agent import SentenceChunkBuilder
+                return SentenceChunkBuilder()  # max_item_chars from SENT_MAX_CHARS env
+            if args.agent == "cogcanvas-emem-nograph":
+                from experiments.agents.emem_agent import EMemBuilder
+                return EMemBuilder()  # model from EMEM_MODEL/EXTRACTOR_MODEL env
+            from experiments.agents.amem_agent import AMemAgent
+            return AMemAgent()
+
+        agent_factory = lambda: CogCanvasAgent(
+            items_builder=_make_items_builder(), **_backbone
+        )
+        agent = agent_factory()
+
+    elif args.agent.startswith("cogcanvas"):
         from experiments.agents.cogcanvas_agent import CogCanvasAgent
 
         # Default Full Config (SOTA) - v3.3: Recall-optimized
@@ -1933,6 +2028,36 @@ def main():
             config["chunks_chunk_size"] = 512
             config["chunks_overlap"] = 100
             config["enable_graph_expansion"] = False
+
+        elif args.agent == "cogcanvas-chunks-abstgate":
+            # Abstention-repair: verbatim-chunks pipeline (identical to
+            # cogcanvas-chunks) PLUS an evidence-sufficiency gate. Before
+            # answering, if the top reranker score < ABST_THRESHOLD the agent
+            # refuses; the "NEVER SAY 'no information'" prompt rule is also
+            # dropped so the model may abstain. Threshold overridable via the
+            # ABST_THRESHOLD env var (default 0.3) for sweeping without edits.
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_abstention_gate"] = True
+            config["abstention_threshold"] = float(os.getenv("ABST_THRESHOLD", "0.3"))
+
+        elif args.agent == "cogcanvas-chunks-refuser":
+            # Tier-2 stronger refusers: identical verbatim-chunks pipeline to
+            # cogcanvas-chunks, but the abstention signal is selectable via the
+            # ABSTAIN_MODE env var (gate | llm | verify; default "llm"):
+            #   - "llm"    M1 LLM evidence-sufficiency gate (with an ABST_THRESHOLD
+            #              coarse score pre-filter; set 0.0 for pure-LLM).
+            #   - "verify" M2 answer-then-verify (LLM checks answer support).
+            #   - "gate"   reproduces the weak score-threshold baseline.
+            # The canvas/extraction is unchanged, so this reuses the same
+            # extraction cache as cogcanvas-chunks (the gate is answer-time only).
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_abstention_gate"] = True
+            config["abstention_mode"] = os.getenv("ABSTAIN_MODE", "llm")
+            config["abstention_threshold"] = float(os.getenv("ABST_THRESHOLD", "0.0"))
 
         # W4 union storage: verbatim chunks AND extracted artifacts in one store
         elif args.agent == "cogcanvas-union":
@@ -2282,11 +2407,39 @@ def main():
 
         agent = SummarizationAgent(retain_recent=args.retain_recent)
         agent_factory = lambda: SummarizationAgent(retain_recent=args.retain_recent)
+    elif args.agent in ("secom", "secom-nocompress"):
+        from experiments.agents.secom_agent import SecomAgent
+
+        _compress = args.agent == "secom"
+        agent = SecomAgent(retain_recent=args.retain_recent, compress=_compress)
+        agent_factory = lambda: SecomAgent(
+            retain_recent=args.retain_recent, compress=_compress
+        )
+    elif args.agent == "mem0":
+        from experiments.agents.mem0_agent import Mem0Agent
+
+        agent = Mem0Agent(retain_recent=args.retain_recent)
+        agent_factory = lambda: Mem0Agent(retain_recent=args.retain_recent)
+    elif args.agent == "amem":
+        from experiments.agents.amem_agent import AMemAgent
+
+        agent = AMemAgent(retain_recent=args.retain_recent)
+        agent_factory = lambda: AMemAgent(retain_recent=args.retain_recent)
+    elif args.agent == "artifacts-flat":
+        from experiments.agents.artifacts_flat_agent import ArtifactsFlatAgent
+
+        agent = ArtifactsFlatAgent(retain_recent=args.retain_recent)
+        agent_factory = lambda: ArtifactsFlatAgent(retain_recent=args.retain_recent)
     elif args.agent == "memgpt-lite":
         from experiments.agents.memgpt_lite_agent import MemGPTLiteAgent
 
         agent = MemGPTLiteAgent(core_memory_size=args.retain_recent)
         agent_factory = lambda: MemGPTLiteAgent(core_memory_size=args.retain_recent)
+    elif args.agent == "memgpt-lite-artifacts":
+        from experiments.agents.memgpt_lite_artifacts_agent import MemGPTLiteArtifactsAgent
+
+        agent = MemGPTLiteArtifactsAgent(core_memory_size=args.retain_recent)
+        agent_factory = lambda: MemGPTLiteArtifactsAgent(core_memory_size=args.retain_recent)
     elif args.agent == "graphrag-lite":
         from experiments.agents.graphrag_lite_agent import GraphRAGLiteAgent
 
