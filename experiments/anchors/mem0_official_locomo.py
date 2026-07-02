@@ -37,6 +37,7 @@ import shutil
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from math import comb
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,6 +67,23 @@ ANSWER_MODEL = os.getenv("ANSWER_MODEL_ANCHOR", "gpt-4o-mini")
 SCORE_MODEL = os.getenv("SCORE_MODEL", "gpt-4o-mini")
 EMBED_MODEL = "text-embedding-3-small"  # Mem0 native default
 EMBED_DIM = 1536
+
+CATEGORIES = (1, 2, 3)   # question categories to evaluate; set from --categories
+SKIP_FULL = False        # skip the full-context row (cost saver); set from --skip-full
+
+
+def _mcnemar(rows, win_key, lose_key):
+    """Exact two-sided McNemar on per-question paired rows. Returns
+    (wins, losses, p) where wins = win_key passed & lose_key failed."""
+    pairs = [r for r in rows if r.get(win_key) is not None and r.get(lose_key) is not None]
+    b_win = sum(1 for r in pairs if r[win_key] and not r[lose_key])
+    b_lose = sum(1 for r in pairs if r[lose_key] and not r[win_key])
+    n = b_win + b_lose
+    if n == 0:
+        return b_win, b_lose, 1.0
+    k = min(b_win, b_lose)
+    p = min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / (2 ** n))
+    return b_win, b_lose, p
 
 # All clients hit the proxy that serves OpenAI-compatible chat + embeddings.
 API_KEY = os.getenv("ANSWER_API_KEY")
@@ -258,7 +276,7 @@ def judge(ans, gt, q):
 
 # --------------------------------------------------------------------------- #
 def run_conv(conv, workers):
-    qas = [qa for qa in conv.qa_pairs if qa.category in (1, 2, 3)]
+    qas = [qa for qa in conv.qa_pairs if qa.category in CATEGORIES]
     t0 = time.time()
     faiss_dir = tempfile.mkdtemp(prefix=f"mem0_{conv.id}_")
     try:
@@ -276,11 +294,12 @@ def run_conv(conv, workers):
                 ctx_c = chunk_context(chunks, index, q)
                 v_m = judge(answer(ctx_m, q), gt, q)
                 v_c = judge(answer(ctx_c, q), gt, q)
-                v_f = judge(answer(full, q), gt, q)
+                v_f = None if SKIP_FULL else judge(answer(full, q), gt, q)
             except Exception as e:  # noqa: BLE001
                 print(f"  conv {conv.id}: skip Q ({type(e).__name__}: {e})", flush=True)
                 return None
-            return {"category": qa.category, "mem0": v_m, "chunks": v_c, "full": v_f}
+            return {"conv_id": conv.id, "question": q, "category": qa.category,
+                    "mem0": v_m, "chunks": v_c, "full": v_f}
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             rows = [r for r in ex.map(one, qas) if r is not None]
@@ -300,7 +319,13 @@ def main():
     ap.add_argument("--conv-workers", type=int, default=5, help="conversations built/answered concurrently")
     ap.add_argument("--data", default=str(ROOT / "experiments/data/locomo10.json"))
     ap.add_argument("--out", default=str(ROOT / "experiments/results/anchor_mem0_official_locomo.json"))
+    ap.add_argument("--categories", default="1,2,3", help="comma list, e.g. 1,2,3,4")
+    ap.add_argument("--skip-full", action="store_true", help="skip full-context row (cost saver)")
     args = ap.parse_args()
+
+    global CATEGORIES, SKIP_FULL
+    CATEGORIES = tuple(int(x) for x in args.categories.split(","))
+    SKIP_FULL = args.skip_full
 
     raw = load_locomo(args.data)
     convs = convert_to_eval_format(raw)[: args.n_conv]
@@ -308,17 +333,29 @@ def main():
           f"answerer={ANSWER_MODEL} judge={SCORE_MODEL} embed={EMBED_MODEL}", flush=True)
 
     def write_summary(rows):
-        n = len(rows) or 1
-        acc = {k: 100.0 * sum(r[k] for r in rows) / n for k in ("mem0", "chunks", "full")}
+        def mean(rs, k):
+            vals = [r[k] for r in rs if r.get(k) is not None]
+            return (100.0 * sum(vals) / len(vals)) if vals else None
+        acc = {k: mean(rows, k) for k in ("mem0", "chunks", "full")}
+        # paired exact McNemar (rows are per-question paired across all stores)
+        mc = {"chunks_vs_mem0": _mcnemar(rows, "chunks", "mem0")}
+        if not SKIP_FULL and any(r.get("full") is not None for r in rows):
+            mc["full_vs_chunks"] = _mcnemar(rows, "full", "chunks")
+        cats = sorted({r["category"] for r in rows})
+        per_cat = {c: {k: mean([r for r in rows if r["category"] == c], k)
+                       for k in ("mem0", "chunks", "full")} for c in cats}
+        ord_holds = (acc["mem0"] is not None and acc["chunks"] is not None
+                     and acc["mem0"] < acc["chunks"])
         out = {
             "n_questions": len(rows), "n_convs": len(convs),
+            "categories": list(CATEGORIES),
             "answerer": ANSWER_MODEL, "judge": SCORE_MODEL, "embedder": EMBED_MODEL,
-            "accuracy": acc,
-            "ordering_holds": acc["mem0"] < acc["chunks"] and acc["mem0"] < acc["full"],
+            "accuracy": acc, "per_category": per_cat, "mcnemar": mc,
+            "ordering_holds": ord_holds,
             "rows": rows,
         }
         Path(args.out).write_text(json.dumps(out, indent=2))
-        return acc
+        return acc, mc
 
     all_rows = []
     with ThreadPoolExecutor(max_workers=args.conv_workers) as ex:
@@ -327,13 +364,16 @@ def main():
             write_summary(all_rows)  # checkpoint after every conversation
 
     n = len(all_rows)
-    acc = write_summary(all_rows)
-    print("\n=== ANCHOR RESULT (LoCoMo Cat1-3, one harness) ===")
+    acc, mc = write_summary(all_rows)
+    cat_str = ",".join(str(c) for c in CATEGORIES)
+    print(f"\n=== ANCHOR RESULT (LoCoMo Cat {cat_str}, one harness) ===")
     print(f"  Official Mem0 (extracted): {acc['mem0']:.1f}%")
     print(f"  Verbatim chunks         : {acc['chunks']:.1f}%")
-    print(f"  Full context (ceiling)  : {acc['full']:.1f}%")
-    holds = acc["mem0"] < acc["chunks"] and acc["mem0"] < acc["full"]
-    print(f"  n={n}  ordering Mem0<chunks & Mem0<full holds: {holds}")
+    if acc["full"] is not None:
+        print(f"  Full context (ceiling)  : {acc['full']:.1f}%")
+    cw, cl, cp = mc["chunks_vs_mem0"]
+    print(f"  McNemar chunks vs Mem0  : chunks-win={cw} mem0-win={cl} p={cp:.2e}")
+    print(f"  n={n}  ordering Mem0<chunks holds: {acc['mem0'] < acc['chunks']}")
     print(f"  saved -> {args.out}")
 
 

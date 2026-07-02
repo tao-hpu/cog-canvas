@@ -1545,6 +1545,7 @@ def main():
             "cogcanvas-no-gleaning",
             "cogcanvas-chunks",          # P1-7: chunks-as-artifacts ablation (graph ON)
             "cogcanvas-chunks-nograph",  # P1-7: chunks + graph OFF
+            "cogcanvas-chunks-refuser",  # Tier-2: chunks-nograph + LLM refuser (ABSTAIN_MODE)
             "cogcanvas-union",           # W4: verbatim chunks AND artifacts in one store
             "cogcanvas-minimal",
             # Multi-round retrieval variants
@@ -1756,6 +1757,20 @@ def main():
             config["chunks_chunk_size"] = 512
             config["chunks_overlap"] = 100
             config["enable_graph_expansion"] = False
+
+        # Tier-2 abstention refuser: chunks-nograph pipeline (matches the
+        # on-disk LME-S chunks baseline) PLUS an LLM refuser. Mode/threshold
+        # via ABSTAIN_MODE (gate|llm|verify, default "llm") / ABST_THRESHOLD.
+        # Canvas/extraction identical to chunks-nograph -> extraction cache
+        # is reused (the refuser is answer-time only).
+        elif args.agent == "cogcanvas-chunks-refuser":
+            config["chunks_mode"] = True
+            config["chunks_chunk_size"] = 512
+            config["chunks_overlap"] = 100
+            config["enable_graph_expansion"] = False
+            config["enable_abstention_gate"] = True
+            config["abstention_mode"] = os.getenv("ABSTAIN_MODE", "llm")
+            config["abstention_threshold"] = float(os.getenv("ABST_THRESHOLD", "0.0"))
 
         # W4 union storage: verbatim chunks AND extracted artifacts in one store
         elif args.agent == "cogcanvas-union":

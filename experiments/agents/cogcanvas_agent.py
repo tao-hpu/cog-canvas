@@ -94,6 +94,34 @@ class CogCanvasAgent(Agent):
         # the same store (batch extraction mode only). Tests whether structure
         # should augment rather than replace verbatim text.
         union_mode: bool = False,
+        # Abstention-repair gate (over-answering fix): when enabled, inspect the
+        # top reranker/retrieval score of the selected context BEFORE generating
+        # an answer; if it falls below abstention_threshold, refuse instead of
+        # calling the answerer, and drop the "NEVER SAY 'no information'" rule so
+        # the model is allowed to abstain. Verbatim-chunks pipeline only.
+        enable_abstention_gate: bool = False,
+        abstention_threshold: float = 0.3,
+        # Tier-2 abstention mechanisms (only active when enable_abstention_gate
+        # is True). Selects WHICH refusal signal the gate uses:
+        #   "gate"   -> the original score-threshold gate (top reranker score <
+        #               abstention_threshold => refuse). The weak baseline.
+        #   "llm"    -> LLM evidence-sufficiency gate (M1): a cheap LLM judges
+        #               whether the retrieved verbatim evidence actually
+        #               contains the answer; abstention_threshold acts as a
+        #               cheap coarse pre-filter (set 0.0 for pure-LLM).
+        #   "verify" -> answer-then-verify (M2): answer normally, then a cheap
+        #               LLM checks whether the answer is supported by the
+        #               retrieved evidence; if not, override to a refusal.
+        abstention_mode: str = "gate",
+        # P1-8 multi-schema fidelity curve: route an arbitrary representation
+        # builder's stored items (SeCom segments / Mem0 facts / A-Mem notes)
+        # through THIS backbone (date-grounding + hybrid + rerank + CoT),
+        # swapping only the stored text. items_builder must expose
+        # build_items(turns) -> List[{content, source_turns, session_datetime}]
+        # and optionally an `anchor_label` string. Mutually exclusive with
+        # chunks_mode / union_mode; the verbatim-chunks anchor is chunks_mode,
+        # so a builder here lands on the same pipeline that scores 43.9 / 28.0.
+        items_builder=None,
     ):
         """
         Initialize CogCanvas agent.
@@ -207,6 +235,12 @@ class CogCanvasAgent(Agent):
         self.chunks_chunk_size = chunks_chunk_size
         self.chunks_overlap = chunks_overlap
         self.union_mode = union_mode
+        self.items_builder = items_builder
+
+        # Abstention-repair gate
+        self.enable_abstention_gate = enable_abstention_gate
+        self.abstention_threshold = abstention_threshold
+        self.abstention_mode = abstention_mode
 
         # Initialize LLM client for answering (uses ANSWER_API_* if available)
         self._client = None
@@ -320,6 +354,8 @@ class CogCanvasAgent(Agent):
             parts.append(f"Chunks{self.chunks_chunk_size}")
         if self.union_mode:
             parts.append(f"Union{self.chunks_chunk_size}")
+        if self.items_builder is not None:
+            parts.append(getattr(self.items_builder, "anchor_label", "Items"))
 
         config_str = "+".join(parts) if parts else "Baseline"
         return f"CogCanvas({config_str})"
@@ -354,7 +390,9 @@ class CogCanvasAgent(Agent):
 
         # Chunks ablation: defer to batch ingestion at the end of the dialog
         # so chunks span turn boundaries naturally. Just buffer history here.
-        if self.chunks_mode:
+        # P1-8 items builder defers identically (its mechanism runs over the
+        # buffered batch in batch_extract).
+        if self.chunks_mode or self.items_builder is not None:
             return
 
         # Extract canvas objects from this turn
@@ -391,6 +429,14 @@ class CogCanvasAgent(Agent):
         # P1-7 Chunks ablation: skip LLM extraction, ingest fixed-size chunks
         if self.chunks_mode:
             self._chunks_ingest(turns, verbose=verbose)
+            return
+
+        # P1-8 multi-schema anchor: skip LLM artifact extraction, run the
+        # representation builder's mechanism over this batch and ingest its
+        # stored items through the shared store + query path.
+        if self.items_builder is not None:
+            items = self.items_builder.build_items(turns, verbose=verbose)
+            self._items_ingest(items, turns, verbose=verbose)
             return
 
         # W4 union storage: ingest verbatim chunks, then fall through to
@@ -562,6 +608,83 @@ class CogCanvasAgent(Agent):
             print(
                 f"      [Chunks Ingest] {len(turns)} turns -> {len(new_objects)} chunks "
                 f"({chunk_size}c, {overlap}o) in {elapsed:.0f}ms"
+            )
+
+    def _items_ingest(self, items, turns, verbose: int = 0) -> None:
+        """
+        P1-8 multi-schema fidelity-curve store-injection.
+
+        Generic counterpart to ``_chunks_ingest``: instead of sliding-window
+        chunks, it ingests whatever stored items a representation builder
+        (SeCom / Mem0 / A-Mem) produced for this batch, wrapping each as a
+        CanvasObject with the *same* fields chunks use (content, verbatim
+        quote, turn_id, session_datetime, shared-backend embedding). Everything
+        downstream -- hybrid retrieval, reranking, date-grounded answering,
+        optional graph inference -- is identical to the verbatim-chunks anchor,
+        so the ONLY swapped variable is the stored text. session_datetime is
+        carried per item exactly as for chunks, so whether a representation
+        keeps temporal grounding is its own fidelity property, not a harness
+        artifact.
+
+        items: List[{content: str, source_turns: List[int], session_datetime}].
+        turns: the source batch, appended to history (batch mode skips
+            process_turn, so this is the sole history population, mirroring
+            _chunks_ingest).
+        """
+        from cogcanvas.models import CanvasObject, ObjectType
+
+        start = time.time()
+        # Mutating representations (Mem0 update/delete, A-Mem evolution) return
+        # their FULL current store each batch; the canvas is rebuilt to mirror
+        # it so superseded/deleted items do not linger. Append-only builders
+        # (SeCom segments) leave replaces_store False and accumulate.
+        if getattr(self.items_builder, "replaces_store", False):
+            self._canvas.clear()
+
+        items = [it for it in (items or []) if (it.get("content") or "").strip()]
+        if not items:
+            self._history.extend(turns)
+            return
+
+        texts = [it["content"].strip() for it in items]
+        embeddings = self._canvas._embedding_backend.embed_batch(texts)
+
+        new_objects = []
+        for it, content, embedding in zip(items, texts, embeddings):
+            sources = it.get("source_turns") or []
+            obj = CanvasObject(
+                type=ObjectType.KEY_FACT,
+                content=content,
+                quote=content,
+                source="dialogue",
+                turn_id=sources[0] if sources else 0,
+                session_datetime=it.get("session_datetime"),
+                embedding=embedding,
+            )
+            self._canvas.add(obj, compute_embedding=False)
+            new_objects.append(obj)
+
+        # Mirror _chunks_ingest: build edges (query-time expansion is still
+        # gated by enable_graph_expansion, so the nograph cell stays nograph).
+        if new_objects:
+            try:
+                self._canvas._infer_relations(
+                    new_objects,
+                    reference_threshold=self.reference_threshold,
+                    causal_threshold=self.causal_threshold,
+                    enable_temporal_heuristic=self.enable_temporal_heuristic,
+                )
+            except Exception as e:
+                if verbose >= 2:
+                    print(f"      [Items] _infer_relations failed: {e}")
+
+        self._history.extend(turns)
+        elapsed = (time.time() - start) * 1000
+        if verbose >= 1:
+            label = getattr(self.items_builder, "anchor_label", "Items")
+            print(
+                f"      [{label} Ingest] -> {len(new_objects)} items "
+                f"in {elapsed:.0f}ms"
             )
 
     def store_turns_only(self, turns: List[ConversationTurn]) -> None:
@@ -1723,6 +1846,94 @@ Return ONLY one word: 'simple' or 'complex'"""
             retrieval_time=retrieval_result.retrieval_time,
         )
 
+    def _build_evidence_block(self, objects, max_items: int = 8) -> str:
+        """Concatenate the top retrieved objects' verbatim quotes (falling back
+        to content) into a numbered evidence block for the refuser judges."""
+        parts = []
+        for i, obj in enumerate(objects[:max_items], 1):
+            ev = (getattr(obj, "quote", "") or getattr(obj, "content", "") or "").strip()
+            if ev:
+                parts.append(f"[{i}] {ev}")
+        return "\n".join(parts) if parts else "(no evidence retrieved)"
+
+    def _llm_evidence_sufficient(self, objects, question: str, verbose: int = 0) -> bool:
+        """M1 evidence-sufficiency judge: does the retrieved verbatim evidence
+        actually contain the facts needed to answer the question?
+
+        Returns True (=> answer) when sufficient, False (=> refuse) when the
+        evidence is only topically related. Fails OPEN (returns True) if no
+        judge client is available or the call errors, so a transient failure
+        never silently destroys answerable accuracy.
+        """
+        client = self._answer_client or self._client
+        if not client:
+            return True
+        evidence = self._build_evidence_block(objects)
+        prompt = (
+            "You are judging whether retrieved evidence is sufficient to answer "
+            "a question. Answer 'yes' ONLY if the evidence contains the specific "
+            "fact(s) needed to answer the question. Answer 'no' if the evidence "
+            "is only topically related but does not actually state the answer.\n\n"
+            f"Question: {question}\n\n"
+            f"Retrieved evidence:\n{evidence}\n\n"
+            "Is the evidence sufficient to answer the question? Answer yes or no only."
+        )
+        try:
+            resp = call_llm_with_retry(
+                client=client,
+                model=self.answer_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0,
+                call_type="judge",
+            )
+            return resp.strip().lower().startswith("yes")
+        except Exception as e:
+            if verbose >= 2:
+                print(f"        [Refuser/llm] sufficiency judge failed ({e}); fail-open")
+            return True
+
+    def _llm_answer_supported(
+        self, answer: str, objects, question: str, verbose: int = 0
+    ) -> bool:
+        """M2 answer-then-verify judge: is the generated answer directly
+        supported by the retrieved verbatim evidence?
+
+        Returns True (=> keep answer) when supported, False (=> refuse) when the
+        answer asserts specific facts not present in the evidence. Fails OPEN.
+        """
+        client = self._answer_client or self._client
+        if not client:
+            return True
+        evidence = self._build_evidence_block(objects)
+        prompt = (
+            "You are checking whether a model's answer is directly supported by "
+            "retrieved evidence. Answer 'yes' if every factual claim in the "
+            "answer is stated in or directly entailed by the evidence. Answer "
+            "'no' if the answer asserts a specific fact (a name, date, number, "
+            "place, etc.) that is not present in the evidence. A refusal such as "
+            "\"the information is not available\" counts as supported (answer "
+            "'yes').\n\n"
+            f"Question: {question}\n\n"
+            f"Retrieved evidence:\n{evidence}\n\n"
+            f"Model answer: {answer}\n\n"
+            "Is the answer fully supported by the evidence? Answer yes or no only."
+        )
+        try:
+            resp = call_llm_with_retry(
+                client=client,
+                model=self.answer_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0,
+                call_type="judge",
+            )
+            return resp.strip().lower().startswith("yes")
+        except Exception as e:
+            if verbose >= 2:
+                print(f"        [Refuser/verify] support judge failed ({e}); fail-open")
+            return True
+
     def _extract_answer_from_context(
         self,
         question: str,
@@ -1733,6 +1944,53 @@ Return ONLY one word: 'simple' or 'complex'"""
         """
         Extract answer from retrieved canvas objects.
         """
+        # 0. Abstention-repair gate: if the best evidence is too weak / does not
+        # support an answer, refuse instead of generating one. The signal used
+        # depends on self.abstention_mode (see __init__):
+        #   - "gate": original top-score-threshold gate (weak baseline).
+        #   - "llm": coarse score pre-filter, then an LLM evidence-sufficiency
+        #            judge (M1).
+        #   - "verify": no pre-gate (answer first), verify after generation (M2).
+        # No objects always => no evidence => refuse, in every mode.
+        if self.enable_abstention_gate:
+            scores = retrieval_result.scores if retrieval_result else None
+            top_score = max(scores) if scores else 0.0
+            no_evidence = not (retrieval_result and retrieval_result.objects)
+            mode = getattr(self, "abstention_mode", "gate")
+
+            if mode in ("gate",):
+                if no_evidence or (top_score < self.abstention_threshold):
+                    if verbose >= 2:
+                        print(
+                            f"        [AbstentionGate] top_score={top_score:.3f} < "
+                            f"thr={self.abstention_threshold:.3f} -> refuse"
+                        )
+                    return "The requested information is not available in the conversation."
+            elif mode in ("llm", "gate_llm"):
+                # M1: cheap score pre-filter first (free), then the LLM judge
+                # only on survivors. With abstention_threshold=0.0 the pre-filter
+                # is inert and every question reaches the LLM judge.
+                if no_evidence or (top_score < self.abstention_threshold):
+                    if verbose >= 2:
+                        print(
+                            f"        [Refuser/llm] score pre-filter "
+                            f"top={top_score:.3f} < thr={self.abstention_threshold:.3f} -> refuse"
+                        )
+                    return "The requested information is not available in the conversation."
+                if not self._llm_evidence_sufficient(
+                    retrieval_result.objects, question, verbose=verbose
+                ):
+                    if verbose >= 2:
+                        print("        [Refuser/llm] evidence judged insufficient -> refuse")
+                    return "The requested information is not available in the conversation."
+            elif mode == "verify":
+                # M2: no pre-gate beyond no-evidence; verification happens after
+                # the answer is generated (see end of the LLM-answer block).
+                if no_evidence:
+                    if verbose >= 2:
+                        print("        [Refuser/verify] no evidence retrieved -> refuse")
+                    return "The requested information is not available in the conversation."
+
         # 1. Use LLM if enabled and available (prefer _answer_client for answer model)
         answer_client = self._answer_client or self._client
         if self.use_real_llm_for_answer and answer_client:
@@ -1841,7 +2099,25 @@ Your goal is to answer questions by connecting discrete facts and tracking chang
 ## Answer
 """
             elif self.prompt_style == "cot":
-                # Chain-of-Thought Prompt - Optimized for Direct Answers
+                # Chain-of-Thought Prompt - Optimized for Direct Answers.
+                # When the abstention gate is enabled, the over-answering rules
+                # (NEVER SAY / ALWAYS ANSWER) are replaced with an explicit
+                # permission to refuse when the context lacks the answer.
+                if self.enable_abstention_gate:
+                    answer_rule = (
+                        "2. **ABSTAIN WHEN UNSUPPORTED**: If the context does not "
+                        "contain the answer, reply exactly: \"The requested "
+                        "information is not available in the conversation.\"\n\n"
+                        "3. **OTHERWISE ANSWER**: If the answer is supported, give "
+                        "it directly. For multi-hop, connect facts."
+                    )
+                else:
+                    answer_rule = (
+                        "2. **NEVER SAY**: \"no information\", \"not mentioned\", "
+                        "\"I don't know\", \"context does not\"\n\n"
+                        "3. **ALWAYS ANSWER**: Give your best answer based on "
+                        "context. For multi-hop, connect facts."
+                    )
                 prompt = f"""Answer this question based on the retrieved memory context.
 
 ## Memory Context
@@ -1858,9 +2134,7 @@ Your goal is to answer questions by connecting discrete facts and tracking chang
    - "where" question -> Start with the place (e.g., "Central Park")
    - yes/no question -> Start with "Yes" or "No"
 
-2. **NEVER SAY**: "no information", "not mentioned", "I don't know", "context does not"
-
-3. **ALWAYS ANSWER**: Give your best answer based on context. For multi-hop, connect facts.
+{answer_rule}
 
 4. **USE ABSOLUTE DATES**: Use dates from [Date: ...] brackets, not "yesterday" or "last week".
 
@@ -1899,6 +2173,20 @@ Your goal is to answer questions by connecting discrete facts and tracking chang
                 llm_ms = (time.time() - llm_start) * 1000
                 if verbose >= 3:
                     print(f"        [LLM Answer] {llm_ms:.0f}ms (model={self.answer_model})")
+                # M2 answer-then-verify: if the generated answer is not supported
+                # by the retrieved verbatim evidence, override it with a refusal.
+                if (
+                    self.enable_abstention_gate
+                    and getattr(self, "abstention_mode", "gate") == "verify"
+                    and retrieval_result
+                    and retrieval_result.objects
+                    and not self._llm_answer_supported(
+                        response, retrieval_result.objects, question, verbose=verbose
+                    )
+                ):
+                    if verbose >= 2:
+                        print("        [Refuser/verify] answer unsupported by evidence -> refuse")
+                    return "The requested information is not available in the conversation."
                 return response
             except Exception as e:
                 print(f"LLM generation failed: {e}")

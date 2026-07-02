@@ -26,6 +26,10 @@ from cogcanvas.embeddings import (
     batch_cosine_similarity,
 )
 from cogcanvas.reranker import Reranker, MockRerankerBackend
+from experiments.agents._budget import (
+    context_budget_chars, effective_k, fill_to_budget, retrieve_topk,
+)
+from experiments.agents._hybrid import hybrid_order
 
 
 @dataclass
@@ -286,34 +290,35 @@ class RagAgent(Agent):
 
             similarities = batch_cosine_similarity(query_embedding, chunk_embeddings)
 
-            # Sort by score
-            scored_chunks = sorted(
-                zip(self._vector_store, similarities), key=lambda x: x[1], reverse=True
+            # Hybrid fusion (0.7 dense + 0.3 BM25), matching the paper backbone.
+            order, fused = hybrid_order(
+                question, [c.content for c in self._vector_store], similarities
             )
+            scored_chunks = [(self._vector_store[i], fused[i]) for i in order]
 
-            # Determine how many candidates to retrieve before reranking
+            budget = context_budget_chars()
+            final_k = retrieve_topk(self.top_k)
+
             if self.use_reranker and self.reranker is not None:
-                # Retrieve 2x top_k candidates for reranking
-                candidate_k = min(self.top_k * 2, len(scored_chunks))
-                candidate_results = scored_chunks[:candidate_k]
-                candidate_chunks = [c for c, s in candidate_results]
-
-                # 2. Rerank the candidates
+                # top-30 coarse candidates -> rerank -> top-final_k (paper backbone)
+                candidate_chunks = [c for c, s in scored_chunks[:30]]
                 chunk_texts = [chunk.content for chunk in candidate_chunks]
                 reranked_results = self.reranker.rerank(
-                    question, chunk_texts, top_k=self.top_k
+                    question, chunk_texts, top_k=final_k
                 )
-
-                # Extract final chunks and scores based on reranking
                 retrieved_chunks = [
                     candidate_chunks[idx] for idx, score in reranked_results
                 ]
                 scores = [score for idx, score in reranked_results]
             else:
-                # No reranking: use top_k results directly
-                top_results = scored_chunks[: self.top_k]
+                top_results = scored_chunks[:final_k]
                 retrieved_chunks = [c for c, s in top_results]
                 scores = [s for c, s in top_results]
+
+            # Optional fixed char budget (off by default; paper top-15 cap rarely binds).
+            if budget:
+                keep = len(fill_to_budget(retrieved_chunks, lambda c: c.content, budget))
+                retrieved_chunks, scores = retrieved_chunks[:keep], scores[:keep]
 
         # 2. Build context
         context_parts = []
