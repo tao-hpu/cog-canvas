@@ -18,7 +18,7 @@ import sys
 from math import comb
 from pathlib import Path
 
-CAT_NAMES = {1: "single-hop", 2: "temporal", 3: "multi-hop"}
+CAT_NAMES = {1: "multi-hop", 2: "temporal", 3: "open-domain"}  # names per LoCoMo paper
 
 
 def load(fname):

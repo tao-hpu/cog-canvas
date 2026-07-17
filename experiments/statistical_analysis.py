@@ -43,7 +43,7 @@ RAG_JSON_PATH = Path(
     "experiments/results/locomo_rag_llmscore_10_cat123.json"
 )
 
-CATEGORY_NAMES = {1: "single-hop", 2: "temporal", 3: "multi-hop"}
+CATEGORY_NAMES = {1: "multi-hop", 2: "temporal", 3: "open-domain"}  # names per LoCoMo paper
 
 RNG = np.random.default_rng(42)
 

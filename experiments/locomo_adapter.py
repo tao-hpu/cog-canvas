@@ -1,12 +1,13 @@
 """
 LoCoMo Dataset Adapter for CogCanvas Evaluation.
 
-Adapts the LoCoMo (Long Context Multi-hop) dataset to the CogCanvas evaluation format.
+Adapts the LoCoMo (long-term conversational memory) dataset to the CogCanvas evaluation format.
 
 LoCoMo Dataset Format:
 - Multi-session conversations between two speakers
 - QA pairs with evidence references (dialogue IDs)
-- Categories: 1=single-hop, 2=temporal, 3=multi-hop
+- Categories: 1=multi-hop, 2=temporal, 3=open-domain, 4=single-hop, 5=adversarial
+  (names per the LoCoMo paper, Maharana et al. 2024)
 
 Adaptation Strategy:
 1. Flatten multi-session conversations into sequential turns
@@ -36,7 +37,10 @@ class LoCoMoQAPair:
     question: str
     answer: str
     evidence: List[str]  # List of dialogue IDs (e.g., ["D1:3", "D2:5"])
-    category: int  # 1=single-hop, 2=temporal, 3=multi-hop, 4=open-domain, 5=adversarial
+    category: int  # 1=multi-hop, 2=temporal, 3=open-domain, 4=single-hop, 5=adversarial
+    # Names follow the LoCoMo paper (Maharana et al., 2024): cat 1 questions
+    # aggregate evidence across sessions (98% have >=2 evidence turns), cat 3
+    # requires open-domain/commonsense knowledge, cat 4 is single-evidence recall.
     # Category 5 (adversarial): the question is unanswerable from the
     # conversation; `answer` holds the plausible-but-wrong trap answer
     # (dataset field `adversarial_answer`). Correct behavior = abstain.
@@ -45,8 +49,8 @@ class LoCoMoQAPair:
     @property
     def category_name(self) -> str:
         """Get human-readable category name."""
-        return {1: "single-hop", 2: "temporal", 3: "multi-hop",
-                4: "open-domain", 5: "adversarial"}.get(self.category, "unknown")
+        return {1: "multi-hop", 2: "temporal", 3: "open-domain",
+                4: "single-hop", 5: "adversarial"}.get(self.category, "unknown")
 
 
 @dataclass
