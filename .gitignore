@@ -118,3 +118,5 @@ pnpm-lock.yaml
 
 # GraphRAG indexes (large generated files)
 experiments/graphrag_test/
+# extraction caches (symlink to external storage)
+experiments/cache

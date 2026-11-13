@@ -245,21 +245,23 @@ context = canvas.inject(results, format="markdown")
 
 ## Citation
 
-If you use CogCanvas in your research, please cite:
+If you use this code or the released run artifacts, please cite (earlier preprint: arXiv:2601.00821):
 
 ```bibtex
-@article{an2026cogcanvas,
-  title={CogCanvas: Verbatim-Grounded Artifact Extraction for Long LLM Conversations},
+@inproceedings{an2027fidelity,
+  title={Fidelity Before Structure: Verbatim Chunks Beat Lossy Artifact Extraction in Long-Conversation LLM Memory},
   author={An, Tao},
-  journal={arXiv preprint arXiv:2601.00821},
-  year={2026},
-  url={https://arxiv.org/abs/2601.00821}
+  booktitle={Proceedings of the 20th Conference of the European Chapter of the Association for Computational Linguistics (EACL)},
+  year={2027},
+  note={To appear}
 }
 ```
 
 ## License
 
-MIT License - see [LICENSE](./LICENSE)
+Code: MIT License, see [LICENSE](./LICENSE).
+
+Data: the synthetic planted-fact benchmark and the released run artifacts (model outputs, scores, run manifests) are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Third-party benchmarks (LoCoMo, PerLTQA, LongMemEval) are not redistributed here; obtain them from their authors under their own licenses.
 
 ---
 

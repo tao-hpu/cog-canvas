@@ -27,6 +27,7 @@ Scoring:
 """
 
 import json
+import os
 import time
 import hashlib
 from dataclasses import dataclass, field
@@ -90,7 +91,11 @@ def get_extraction_config_hash(config: dict, extraction_mode: str = "batch") -> 
 
 def get_cache_path(conv_id: str, config_hash: str) -> Path:
     """Get the cache file path for a conversation."""
-    cache_dir = Path("experiments/cache/extraction") / config_hash
+    # EXTRACTION_CACHE_DIR_OVERRIDE points the run at a hand-built store (e.g. the
+    # artifact subset of a union store) instead of the directory keyed by the
+    # config hash, so that arms can be compared on a byte-identical store.
+    override = os.getenv("EXTRACTION_CACHE_DIR_OVERRIDE")
+    cache_dir = Path(override) if override else Path("experiments/cache/extraction") / config_hash
     return cache_dir / f"{conv_id}.json"
 
 
