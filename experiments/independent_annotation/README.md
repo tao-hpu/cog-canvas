@@ -43,9 +43,9 @@ The on-screen instructions in `annotate.html` are in Chinese, the annotator's fi
 
 Run `python score_independent.py annotations_export.json` to reproduce these figures.
 
-Part 1 (100 correctness items, stratified 25 per benchmark and representation cell) is the study reported in Appendix L.7 of the paper. The independent annotator agrees with the LLM judge on 89% of items (Cohen's kappa 0.78) and with the author annotator on 90% (kappa 0.80).
+Both parts are reported in Appendix L.7 of the paper. Part 1 covers 100 correctness items, stratified 25 per benchmark and representation cell. The independent annotator agrees with the LLM judge on 89% of items (Cohen's kappa 0.78) and with the author annotator on 90% (kappa 0.80).
 
-Part 2 (50 LoCoMo category-5 items, labeled "declined" or "gave an answer") is a supplementary check of the abstention judge. It was collected with the same tool and is released here; the appendix describes only the lexical consistency check for that judge. The independent annotator agrees with the abstention judge on all 50 items (kappa 1.00; 5 declined, 45 answered) and with a second annotator on all 50. With only 5 declined items, this sample is small evidence and should be read as a sanity check.
+Part 2 (50 LoCoMo category-5 answers, 25 per pipeline, labeled "declined" or "gave an answer") validates the abstention judge and is reported in the same appendix. The independent annotator agrees with the abstention judge on all 50 items (kappa 1.00; 5 declined, 45 answered). An independent LLM annotator (`cat5_blind_labels_annotator2.csv`) labeled the same sample and also agrees on all 50.
 
 ## Source data (read-only)
 
