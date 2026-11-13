@@ -261,7 +261,7 @@ If you use this code or the released run artifacts, please cite (earlier preprin
 
 Code: MIT License, see [LICENSE](./LICENSE).
 
-Data: the synthetic planted-fact benchmark and the released run artifacts (model outputs, scores, run manifests) are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Third-party benchmarks (LoCoMo, PerLTQA, LongMemEval) are not redistributed here; obtain them from their authors under their own licenses.
+Data: the synthetic planted-fact benchmark and the released run artifacts (model outputs, scores, run manifests) are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The dataset files of third-party benchmarks (LoCoMo, PerLTQA, LongMemEval) are not redistributed here; obtain them from their authors under their own licenses. Result files quote the benchmark questions and gold answers they were scored against. Those excerpts remain under the original licenses (CC BY-NC 4.0 for LoCoMo and PerLTQA, MIT for LongMemEval) and are not covered by CC BY 4.0.
 
 ---
 
