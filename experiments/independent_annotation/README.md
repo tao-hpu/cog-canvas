@@ -39,9 +39,13 @@ The on-screen instructions in `annotate.html` are in Chinese, the annotator's fi
 >
 > Progress is saved in this browser. You can close the file and reopen it to continue. When you finish, click Export and send back the downloaded file.
 
-## What the paper reports
+## Results
 
-The paper reports Part 1: the 100 correctness items, stratified 25 per benchmark and representation cell. Part 2 (50 abstention items) is included in the export but is not reported in the paper, which states that the abstention judge is outside the human study.
+Run `python score_independent.py annotations_export.json` to reproduce these figures.
+
+Part 1 (100 correctness items, stratified 25 per benchmark and representation cell) is the study reported in Appendix L.7 of the paper. The independent annotator agrees with the LLM judge on 89% of items (Cohen's kappa 0.78) and with the author annotator on 90% (kappa 0.80).
+
+Part 2 (50 LoCoMo category-5 items, labeled "declined" or "gave an answer") is a supplementary check of the abstention judge. It was collected with the same tool and is released here; the appendix describes only the lexical consistency check for that judge. The independent annotator agrees with the abstention judge on all 50 items (kappa 1.00; 5 declined, 45 answered) and with a second annotator on all 50. With only 5 declined items, this sample is small evidence and should be read as a sanity check.
 
 ## Source data (read-only)
 
