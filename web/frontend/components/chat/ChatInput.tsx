@@ -104,7 +104,7 @@ Remaining TODOs:
 
 export function getRandomTestMessage(): string {
   const randomIndex = Math.floor(Math.random() * TEST_MESSAGES.length);
-  return TEST_MESSAGES[randomIndex];
+  return TEST_MESSAGES[randomIndex] ?? TEST_MESSAGES[0] ?? '';
 }
 
 export function ChatInput({ onSendMessage, disabled, isExtracting }: ChatInputProps) {

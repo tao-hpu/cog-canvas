@@ -13,10 +13,11 @@ interface MessageItemProps {
   isExtracting?: boolean;
 }
 
+const keyFactColors = { bg: 'bg-green-500/10', text: 'text-green-500' };
 const typeColors: Record<string, { bg: string, text: string }> = {
   decision: { bg: 'bg-blue-500/10', text: 'text-blue-500' },
   todo: { bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
-  key_fact: { bg: 'bg-green-500/10', text: 'text-green-500' },
+  key_fact: keyFactColors,
   reminder: { bg: 'bg-purple-500/10', text: 'text-purple-500' },
   insight: { bg: 'bg-orange-500/10', text: 'text-orange-500' },
   person_attribute: { bg: 'bg-amber-700/10', text: 'text-amber-700' },
@@ -87,7 +88,7 @@ export function MessageItem({ message, isExtracting }: MessageItemProps) {
             {isRetrievalExpanded && (
               <div className="px-3 pb-3 space-y-2">
                 {message.retrievedObjects.map((obj) => {
-                  const colors = typeColors[obj.type] || typeColors.key_fact;
+                  const colors = typeColors[obj.type] ?? keyFactColors;
                   return (
                     <div
                       key={obj.id}
@@ -158,7 +159,7 @@ export function MessageItem({ message, isExtracting }: MessageItemProps) {
             {isExtractionExpanded && (
               <div className="px-3 pb-3 flex flex-wrap gap-2">
                 {message.extractedObjects.map((obj) => {
-                  const colors = typeColors[obj.type] || typeColors.key_fact;
+                  const colors = typeColors[obj.type] ?? keyFactColors;
                   const truncatedContent = obj.content.length > 30
                     ? obj.content.substring(0, 30) + '...'
                     : obj.content;

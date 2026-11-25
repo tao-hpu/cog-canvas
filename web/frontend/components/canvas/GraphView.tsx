@@ -23,22 +23,23 @@ const typeColors: Record<string, string> = {
 };
 
 export function GraphView({ data, width, height }: GraphViewProps) {
-  const graphRef = useRef<any>();
+  const graphRef = useRef<any>(null);
   const isInitialized = useRef(false);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
-  // Stabilize graph data reference - only update when node/link IDs change
+  // Stabilize graph data reference - only update when node/link IDs change.
+  // Depending on object identity would rebuild the force layout on every poll.
+  const nodeKey = data?.nodes.map((node) => node.id).join(',') ?? '';
+  const linkKey = data?.links.map((link) => `${link.source}-${link.target}`).join(',') ?? '';
   const stableGraphData = useMemo(() => {
     if (!data) return { nodes: [], links: [] };
     return {
       nodes: data.nodes.map(node => ({ ...node })),
       links: data.links.map(link => ({ ...link })),
     };
-  }, [
-    // Only re-create when the set of node IDs or link structure changes
-    data?.nodes.map(n => n.id).join(','),
-    data?.links.map(l => `${l.source}-${l.target}`).join(','),
-  ]);
+    // Structural keys replace object identity so identical polls do not reset the force layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeKey, linkKey]);
 
   useEffect(() => {
     if (graphRef.current && !isInitialized.current) {
@@ -269,7 +270,7 @@ export function GraphView({ data, width, height }: GraphViewProps) {
                     Quote
                   </span>
                   <p className="text-foreground/90 text-sm italic leading-relaxed border-l-2 border-border/50 pl-3 bg-accent/20 py-2 pr-2 rounded-r">
-                    "{selectedNode.quote}"
+                    &quot;{selectedNode.quote}&quot;
                   </p>
                 </div>
               </>

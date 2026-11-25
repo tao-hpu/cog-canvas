@@ -6,7 +6,9 @@
     "dev": "next dev -p 3800",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "next typegen && tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@radix-ui/react-scroll-area": "^1.2.10",
@@ -22,8 +24,8 @@
     "autoprefixer": "^10.4.23",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.0.10",
-    "next": "^14.2.35",
-    "postcss": "^8.5.6",
+    "next": "^15.5.29",
+    "postcss": "^8.5.33",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-force-graph-2d": "^1.29.0",
@@ -40,5 +42,11 @@
     "lucide-react": "^0.561.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.33",
+      "postcss-selector-parser": "6.1.6"
+    }
   }
 }
