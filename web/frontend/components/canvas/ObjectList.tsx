@@ -2,19 +2,17 @@
 
 import { useState } from 'react';
 import { CanvasObject } from '@/lib/types';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface ObjectListProps {
   objects: CanvasObject[];
 }
 
+const keyFactColors = { bg: 'bg-green-500', text: 'text-green-500', border: 'border-green-500' };
 const typeColors: Record<string, { bg: string, text: string, border: string }> = {
   decision: { bg: 'bg-blue-500', text: 'text-blue-500', border: 'border-blue-500' },
   todo: { bg: 'bg-yellow-500', text: 'text-yellow-500', border: 'border-yellow-500' },
-  key_fact: { bg: 'bg-green-500', text: 'text-green-500', border: 'border-green-500' },
+  key_fact: keyFactColors,
   reminder: { bg: 'bg-purple-500', text: 'text-purple-500', border: 'border-purple-500' },
   insight: { bg: 'bg-orange-500', text: 'text-orange-500', border: 'border-orange-500' },
   person_attribute: { bg: 'bg-amber-700', text: 'text-amber-700', border: 'border-amber-700' },
@@ -69,7 +67,9 @@ export function ObjectList({ objects }: ObjectListProps) {
             <TabsTrigger value="person_attribute" className="text-xs px-3 h-7 data-[state=active]:bg-amber-700/10 data-[state=active]:text-amber-700 rounded-full border data-[state=active]:border-amber-700/20">Person ({tabCounts.person_attribute})</TabsTrigger>
             <TabsTrigger value="event" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/10 data-[state=active]:text-cyan-500 rounded-full border data-[state=active]:border-cyan-500/20">Event ({tabCounts.event})</TabsTrigger>
             <TabsTrigger value="relationship" className="text-xs px-3 h-7 data-[state=active]:bg-gray-500/10 data-[state=active]:text-gray-500 rounded-full border data-[state=active]:border-gray-500/20">Rel ({tabCounts.relationship})</TabsTrigger>
-
+          </TabsList>
+        </Tabs>
+      </div>
 
       <div className="flex-1 overflow-y-auto px-4 chat-scrollbar">
         <div className="space-y-3 py-4">
@@ -79,7 +79,7 @@ export function ObjectList({ objects }: ObjectListProps) {
             </div>
           ) : (
             sortedObjects.map((obj) => {
-               const colors = typeColors[obj.type] || typeColors.key_fact;
+               const colors = typeColors[obj.type] ?? keyFactColors;
                return (
                 <div 
                   key={obj.id} 

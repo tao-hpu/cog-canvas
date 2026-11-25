@@ -92,7 +92,7 @@ export function HelpView() {
               <span className="text-xs font-mono bg-muted px-1 rounded">references</span>
               <span className="h-px bg-border flex-1"></span>
             </div>
-            <p className="text-muted-foreground text-xs pl-2">Semantic connection or direct mention. (e.g., "Node A relates to Node B")</p>
+            <p className="text-muted-foreground text-xs pl-2">Semantic connection or direct mention. (e.g., &quot;Node A relates to Node B&quot;)</p>
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 font-medium">
@@ -135,7 +135,7 @@ export function HelpView() {
             <div className="flex items-center gap-2 font-medium">
               <span className="text-xs font-mono bg-muted px-1 rounded">Context</span>
             </div>
-            <p className="text-muted-foreground text-xs pl-2">The Extraction LLM's explanation of why this object was extracted. (AI's reasoning/motivation)</p>
+            <p className="text-muted-foreground text-xs pl-2">The Extraction LLM&apos;s explanation of why this object was extracted. (AI&apos;s reasoning/motivation)</p>
           </div>
         </CardContent>
       </Card>

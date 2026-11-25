@@ -1,12 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useState, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useChat } from '@/hooks/useChat';
 import { useCanvas } from '@/hooks/useCanvas';
 import { MessageList } from '@/components/chat/MessageList';
 import { ChatInput, getRandomTestMessage } from '@/components/chat/ChatInput';
 import { ObjectList } from '@/components/canvas/ObjectList';
-import { GraphView } from '@/components/canvas/GraphView';
+const GraphView = dynamic(
+  () => import('@/components/canvas/GraphView').then((mod) => mod.GraphView),
+  { ssr: false },
+);
 import { HelpView } from '@/components/canvas/HelpView';
 import { ControlPanel } from '@/components/control/ControlPanel';
 import {
@@ -111,20 +115,22 @@ export default function Home() {
     const interval = setInterval(fetchCanvasData, 10000); // Refresh every 10s
 
     // --- ResizeObserver for Graph Height ---
-    let observer: ResizeObserver;
-    if (graphContainerRef.current) {
+    const graphNode = graphContainerRef.current;
+    let observer: ResizeObserver | undefined;
+    if (graphNode) {
       observer = new ResizeObserver((entries) => {
-        if (entries[0]) {
-          setGraphHeight(entries[0].contentRect.height);
+        const entry = entries[0];
+        if (entry) {
+          setGraphHeight(entry.contentRect.height);
         }
       });
-      observer.observe(graphContainerRef.current);
+      observer.observe(graphNode);
     }
 
     return () => {
       clearInterval(interval);
-      if (graphContainerRef.current && observer) {
-        observer.unobserve(graphContainerRef.current);
+      if (graphNode && observer) {
+        observer.unobserve(graphNode);
       }
     };
   }, [cogcanvasEnabled, sessionId, setObjects, setGraphData, setStats, viewMode]); // Added viewMode to dependencies
