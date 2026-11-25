@@ -115,6 +115,8 @@ web/frontend/node_modules/
 # pnpm
 .pnpm-debug.log
 pnpm-lock.yaml
+# Pin the frontend install so the Next.js security bump is reproducible.
+!web/frontend/pnpm-lock.yaml
 
 # GraphRAG indexes (large generated files)
 experiments/graphrag_test/
